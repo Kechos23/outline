@@ -10,7 +10,7 @@ import { ThemeProvider, useTheme } from "styled-components";
 import { errToString } from "@shared/utils/error";
 import { buildDarkTheme, buildLightTheme } from "@shared/styles/theme";
 import type { CustomTheme } from "@shared/types";
-import { TOCPosition, TeamPreference } from "@shared/types";
+import { CalloutStyle, TOCPosition, TeamPreference } from "@shared/types";
 import { getBaseDomain } from "@shared/utils/domains";
 import { TeamValidation } from "@shared/validations";
 import Button from "~/components/Button";
@@ -68,6 +68,9 @@ function Details() {
   const [tocPosition, setTocPosition] = useState(
     team.getPreference(TeamPreference.TocPosition) as TOCPosition
   );
+  const [calloutStyle, setCalloutStyle] = useState(
+    team.getPreference(TeamPreference.CalloutStyle) as CalloutStyle
+  );
 
   const tocPositionOptions: Option[] = React.useMemo(
     () =>
@@ -86,8 +89,29 @@ function Details() {
     [t]
   );
 
+  const calloutStyleOptions: Option[] = React.useMemo(
+    () =>
+      [
+        {
+          type: "item",
+          label: t("Outline notices"),
+          value: CalloutStyle.Outline,
+        },
+        {
+          type: "item",
+          label: t("GitHub alerts"),
+          value: CalloutStyle.GitHub,
+        },
+      ] satisfies Option[],
+    [t]
+  );
+
   const handleTocPositionChange = React.useCallback((position: string) => {
     setTocPosition(position as TOCPosition);
+  }, []);
+
+  const handleCalloutStyleChange = React.useCallback((style: string) => {
+    setCalloutStyle(style as CalloutStyle);
   }, []);
 
   const handleSubmit = React.useCallback(
@@ -107,6 +131,7 @@ function Details() {
             publicBranding,
             customTheme,
             tocPosition,
+            calloutStyle,
           },
         });
         toast.success(t("Settings saved"));
@@ -116,6 +141,7 @@ function Details() {
     },
     [
       tocPosition,
+      calloutStyle,
       team,
       name,
       description,
@@ -296,6 +322,21 @@ function Details() {
               />
             </SettingRow>
           )}
+          <SettingRow
+            label={t("Callout style")}
+            name={TeamPreference.CalloutStyle}
+            description={t(
+              "Choose which callouts are created, displayed, and exported in this workspace. Callouts from the other style remain as plain content."
+            )}
+          >
+            <InputSelect
+              options={calloutStyleOptions}
+              value={calloutStyle}
+              onChange={handleCalloutStyleChange}
+              label={t("Callout style")}
+              labelHidden
+            />
+          </SettingRow>
           <SettingRow
             border={false}
             label={t("Table of contents position")}

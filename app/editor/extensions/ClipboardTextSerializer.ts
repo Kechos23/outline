@@ -58,8 +58,9 @@ export default class ClipboardTextSerializer extends Extension {
               ? slice.content.content
                   .map((node) => ProsemirrorHelper.toPlainText(node))
                   .join("\n")
-              : mdSerializer.serialize(slice.content, {
+                : mdSerializer.serialize(slice.content, {
                   commonMark: true,
+                  calloutStyle: this.editor.props.calloutStyle,
                 });
           },
         },

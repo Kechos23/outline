@@ -108,18 +108,19 @@ type Props = Omit<SuggestionsMenuProps, "renderMenuItem" | "items"> &
 
 function BlockMenu(props: Props) {
   const { t } = useTranslation();
-  const { elementRef } = useEditor();
+  const editor = useEditor();
+  const { elementRef } = editor;
   const templateMenuItem = useTemplateMenuItem();
 
   const items = useMemo(() => {
-    const baseItems = getMenuItems(t, elementRef);
+    const baseItems = getMenuItems(t, elementRef, editor.props.calloutStyle);
 
     if (!templateMenuItem) {
       return baseItems;
     }
 
     return [...baseItems, { name: "separator" } as MenuItem, templateMenuItem];
-  }, [t, elementRef, templateMenuItem]);
+  }, [t, elementRef, editor.props.calloutStyle, templateMenuItem]);
 
   const renderMenuItem = useCallback(
     (item, _index, options) => (

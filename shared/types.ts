@@ -449,6 +449,13 @@ export enum TeamPreference {
   MCP = "mcp",
   /** List of disabled embed provider titles. */
   DisabledEmbeds = "disabledEmbeds",
+  /** The callout syntax and presentation used when creating and exporting callouts. */
+  CalloutStyle = "calloutStyle",
+}
+
+export enum CalloutStyle {
+  Outline = "outline",
+  GitHub = "github",
 }
 
 export type TeamPreferences = {
@@ -466,6 +473,7 @@ export type TeamPreferences = {
   [TeamPreference.EmailDisplay]?: EmailDisplay;
   [TeamPreference.MCP]?: boolean;
   [TeamPreference.DisabledEmbeds]?: string[];
+  [TeamPreference.CalloutStyle]?: CalloutStyle;
 };
 
 export enum NavigationNodeType {
