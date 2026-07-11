@@ -68,7 +68,10 @@ export default abstract class ExportDocumentTreeTask extends ExportTask {
     let text =
       format === FileOperationFormat.HTMLZip
         ? await DocumentHelper.toHTML(document, { centered: true })
-        : await DocumentHelper.toMarkdown(document, { commonMark: true });
+        : await DocumentHelper.toMarkdown(document, {
+            commonMark: true,
+            teamId: document.teamId,
+          });
 
     const isTextBundle = format === FileOperationFormat.TextBundleZip;
 

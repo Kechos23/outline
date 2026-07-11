@@ -53,7 +53,7 @@ import type {
   ProsemirrorMark,
   UserPreferences,
 } from "@shared/types";
-import { HeadingPrefixStyle } from "@shared/types";
+import { CalloutStyle, HeadingPrefixStyle } from "@shared/types";
 import { headingPrefixPluginKey } from "@shared/editor/extensions/HeadingPrefix";
 import { ProsemirrorHelper } from "@shared/utils/ProsemirrorHelper";
 import EventEmitter from "@shared/utils/events";
@@ -186,6 +186,8 @@ export type Props = {
   userPreferences?: UserPreferences | null;
   /** The style of prefix displayed before headings in the document. */
   headingPrefix?: HeadingPrefixStyle;
+  /** Workspace callout presentation and export style. */
+  calloutStyle?: CalloutStyle;
   /** Whether embeds should be rendered without an iframe */
   embedsDisabled?: boolean;
   className?: string;
@@ -230,6 +232,7 @@ export class Editor extends React.PureComponent<
     onNotice: toastNotice,
     embeds: [],
     extensions,
+    calloutStyle: CalloutStyle.Outline,
   };
 
   state: State = {
@@ -1068,6 +1071,7 @@ export class Editor extends React.PureComponent<
             column
           >
             <EditorContainer
+              $calloutStyle={this.props.calloutStyle}
               $rtl={isRTL}
               grow={grow}
               readOnly={readOnly}
@@ -1122,7 +1126,31 @@ const EditorContainer = styled(Styles)<{
   userId?: string;
   focusedCommentId?: string;
   hoveredCommentId?: string;
+  $calloutStyle?: CalloutStyle;
 }>`
+  .notice-block[data-dialect]:not(
+      [data-dialect="${(props) => props.$calloutStyle}"]
+    ) {
+    display: block;
+    background: transparent;
+    border: 0;
+    color: inherit;
+    padding: 0;
+    margin: 0;
+
+    > .icon {
+      display: none;
+    }
+
+    > .github-alert-title {
+      display: none;
+    }
+
+    a {
+      color: inherit;
+    }
+  }
+
   ${(props) =>
     props.focusedCommentId &&
     css`

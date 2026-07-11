@@ -4,6 +4,8 @@
 // forked for table support
 
 /** Options that control how a ProseMirror document is serialized to Markdown. */
+import type { CalloutStyle } from "@shared/types";
+
 type Options = {
   /** Whether list items are rendered without blank lines between them. */
   tightLists?: boolean;
@@ -14,6 +16,8 @@ type Options = {
    * losslessly through its own parser but is not standard Markdown.
    */
   commonMark?: boolean;
+  /** Callout dialect to emit. Callouts from the other dialect become plain Markdown. */
+  calloutStyle?: CalloutStyle;
 };
 
 // ::- A specification for serializing a ProseMirror document as

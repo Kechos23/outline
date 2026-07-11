@@ -11,7 +11,13 @@ import headingToSlug from "@shared/editor/lib/headingToSlug";
 import textBetween from "@shared/editor/lib/textBetween";
 import { EditorStyleHelper } from "@shared/editor/styles/EditorStyleHelper";
 import type { NavigationNode, ProsemirrorData } from "@shared/types";
-import { DocumentPreference, IconType, TextEditMode } from "@shared/types";
+import {
+  CalloutStyle,
+  DocumentPreference,
+  IconType,
+  TeamPreference,
+  TextEditMode,
+} from "@shared/types";
 import { determineIconType } from "@shared/utils/icon";
 import { ProsemirrorDataHelper } from "@shared/utils/ProsemirrorDataHelper";
 import { parser, serializer, schema } from "@server/editor";
@@ -19,7 +25,7 @@ import { ValidationError } from "@server/errors";
 import { addTags } from "@server/logging/tracer";
 import { trace } from "@server/logging/tracing";
 import type { Template } from "@server/models";
-import { Collection, Document, Revision } from "@server/models";
+import { Collection, Document, Revision, Team } from "@server/models";
 import type { MentionAttrs } from "./ProsemirrorHelper";
 import { ProsemirrorHelper } from "./ProsemirrorHelper";
 import { TextHelper } from "./TextHelper";
@@ -315,8 +321,14 @@ export class DocumentHelper {
       node = Node.fromJSON(schema, data);
     }
 
+    const calloutStyle = options?.teamId
+      ? ((await Team.findByPk(options.teamId))?.getPreference(
+          TeamPreference.CalloutStyle
+        ) as CalloutStyle)
+      : CalloutStyle.Outline;
+
     const text = serializer
-      .serialize(node, { commonMark: options?.commonMark })
+      .serialize(node, { commonMark: options?.commonMark, calloutStyle })
       .replace(/(^|\n)\\(\n|$)/g, "\n\n")
       .trim();
 

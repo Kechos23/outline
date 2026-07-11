@@ -41,6 +41,7 @@ import DocumentTitle from "./DocumentTitle";
 import { first } from "es-toolkit/compat";
 import useShare from "@shared/hooks/useShare";
 import CodeWordBreak from "@shared/editor/extensions/CodeWordBreak";
+import { CalloutStyle, TeamPreference } from "@shared/types";
 
 const extensions = [
   CodeWordBreak,
@@ -256,6 +257,10 @@ function DocumentEditor(props: Props, ref: React.ForwardedRef<SharedEditor>) {
         />
       ) : null}
       <EditorComponent
+        calloutStyle={
+          (team?.getPreference(TeamPreference.CalloutStyle) as CalloutStyle) ??
+          CalloutStyle.Outline
+        }
         ref={mergeRefs([ref, editorRef, handleRefChanged])}
         lang={getLangFor(document.language)}
         autoFocus={!!document.title && !props.defaultValue}

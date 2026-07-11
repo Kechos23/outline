@@ -7,7 +7,16 @@ import type {
   NodeType,
 } from "prosemirror-model";
 import type { Command, EditorState, Transaction } from "prosemirror-state";
+import ReactDOM from "react-dom";
 import type { Primitive } from "utility-types";
+import { CalloutStyle } from "@shared/types";
+import {
+  GitHubAlertCautionIcon,
+  GitHubAlertImportantIcon,
+  GitHubAlertNoteIcon,
+  GitHubAlertTipIcon,
+  GitHubAlertWarningIcon,
+} from "../components/GitHubAlertIcons";
 import toggleWrap from "../commands/toggleWrap";
 import type { MarkdownSerializerState } from "../lib/markdown/serializer";
 import noticesRule from "../rules/notices";
@@ -15,12 +24,28 @@ import { EditorStyleHelper } from "../styles/EditorStyleHelper";
 import type { ComponentProps } from "../types";
 import Node from "./Node";
 
+export enum NoticeDialect {
+  Outline = "outline",
+  GitHub = "github",
+}
+
 export enum NoticeTypes {
   Info = "info",
   Success = "success",
   Tip = "tip",
   Warning = "warning",
+  Note = "note",
+  Important = "important",
+  Caution = "caution",
 }
+
+const githubAlertLabels: Record<string, string> = {
+  [NoticeTypes.Note]: "Note",
+  [NoticeTypes.Tip]: "Tip",
+  [NoticeTypes.Important]: "Important",
+  [NoticeTypes.Warning]: "Warning",
+  [NoticeTypes.Caution]: "Caution",
+};
 
 export default class Notice extends Node {
   get name() {
@@ -37,6 +62,9 @@ export default class Notice extends Node {
         style: {
           default: NoticeTypes.Info,
         },
+        dialect: {
+          default: NoticeDialect.Outline,
+        },
       },
       content:
         "(list | blockquote | hr | paragraph | heading | code_block | code_fence | attachment)+",
@@ -51,13 +79,17 @@ export default class Notice extends Node {
             node.querySelector(`div.${EditorStyleHelper.noticeContent}`) ||
             node,
           getAttrs: (dom: HTMLDivElement) => ({
-            style: dom.className.includes(NoticeTypes.Tip)
+            dialect:
+              dom.dataset.dialect === NoticeDialect.GitHub
+                ? NoticeDialect.GitHub
+                : NoticeDialect.Outline,
+            style: dom.dataset.style || (dom.className.includes(NoticeTypes.Tip)
               ? NoticeTypes.Tip
               : dom.className.includes(NoticeTypes.Warning)
                 ? NoticeTypes.Warning
                 : dom.className.includes(NoticeTypes.Success)
                   ? NoticeTypes.Success
-                  : undefined,
+                  : undefined),
           }),
         },
         // Quill editor parsing
@@ -95,11 +127,64 @@ export default class Notice extends Node {
           }),
         },
       ],
-      toDOM: (node) => [
-        "div",
-        { class: `${EditorStyleHelper.notice} ${node.attrs.style}` },
-        ["div", { class: EditorStyleHelper.noticeContent }, 0],
-      ],
+      toDOM: (node) => {
+        let icon;
+        let title;
+        if (typeof document !== "undefined") {
+          let component;
+
+          if (node.attrs.dialect === NoticeDialect.GitHub) {
+            if (node.attrs.style === NoticeTypes.Tip) {
+              component = <GitHubAlertTipIcon />;
+            } else if (node.attrs.style === NoticeTypes.Important) {
+              component = <GitHubAlertImportantIcon />;
+            } else if (node.attrs.style === NoticeTypes.Warning) {
+              component = <GitHubAlertWarningIcon />;
+            } else if (node.attrs.style === NoticeTypes.Caution) {
+              component = <GitHubAlertCautionIcon />;
+            } else {
+              component = <GitHubAlertNoteIcon />;
+            }
+          } else {
+            if (node.attrs.style === NoticeTypes.Tip) {
+              component = <StarredIcon />;
+            } else if (node.attrs.style === NoticeTypes.Warning) {
+              component = <WarningIcon />;
+            } else if (node.attrs.style === NoticeTypes.Success) {
+              component = <DoneIcon />;
+            } else {
+              component = <InfoIcon />;
+            }
+          }
+
+          icon = document.createElement("div");
+          icon.className = "icon";
+          ReactDOM.render(component, icon);
+
+          if (node.attrs.dialect === NoticeDialect.GitHub) {
+            title = document.createElement("div");
+            title.className = "github-alert-title";
+            title.contentEditable = "false";
+            title.appendChild(icon);
+
+            const label = document.createElement("span");
+            label.textContent =
+              githubAlertLabels[node.attrs.style] || githubAlertLabels.note;
+            title.appendChild(label);
+          }
+        }
+
+        return [
+          "div",
+          {
+            class: `${EditorStyleHelper.notice} ${node.attrs.dialect} ${node.attrs.style}`,
+            "data-dialect": node.attrs.dialect,
+            "data-style": node.attrs.style,
+          },
+          ...(title ? [title] : icon ? [icon] : []),
+          ["div", { class: EditorStyleHelper.noticeContent }, 0],
+        ];
+      },
     };
   }
 
@@ -115,13 +200,37 @@ export default class Notice extends Node {
         this.handleStyleChange(state, dispatch, NoticeTypes.Success),
       tip: (): Command => (state, dispatch) =>
         this.handleStyleChange(state, dispatch, NoticeTypes.Tip),
+      note: (): Command => (state, dispatch) =>
+        this.handleStyleChange(
+          state,
+          dispatch,
+          NoticeTypes.Note,
+          NoticeDialect.GitHub
+        ),
+      important: (): Command => (state, dispatch) =>
+        this.handleStyleChange(
+          state,
+          dispatch,
+          NoticeTypes.Important,
+          NoticeDialect.GitHub
+        ),
+      caution: (): Command => (state, dispatch) =>
+        this.handleStyleChange(
+          state,
+          dispatch,
+          NoticeTypes.Caution,
+          NoticeDialect.GitHub
+        ),
     };
   }
 
   handleStyleChange = (
     state: EditorState,
     dispatch: ((tr: Transaction) => void) | undefined,
-    style: NoticeTypes
+    style: NoticeTypes,
+    dialect = this.editor?.props.calloutStyle === CalloutStyle.GitHub
+      ? NoticeDialect.GitHub
+      : NoticeDialect.Outline
   ): boolean => {
     const { tr, selection } = state;
     const { $from } = selection;
@@ -132,6 +241,7 @@ export default class Notice extends Node {
         const transaction = tr.setNodeMarkup($from.before(-1), undefined, {
           ...node.attrs,
           style,
+          dialect,
         });
         dispatch(transaction);
       }
@@ -172,6 +282,24 @@ export default class Notice extends Node {
   }
 
   toMarkdown(state: MarkdownSerializerState, node: ProsemirrorNode) {
+    const selectedDialect =
+      state.options.calloutStyle === CalloutStyle.GitHub
+        ? NoticeDialect.GitHub
+        : NoticeDialect.Outline;
+    const dialect = node.attrs.dialect || NoticeDialect.Outline;
+
+    if (dialect !== selectedDialect) {
+      state.renderContent(node);
+      state.closeBlock(node);
+      return;
+    }
+
+    if (selectedDialect === NoticeDialect.GitHub) {
+      state.write(`\n> [!${String(node.attrs.style).toUpperCase()}]\n`);
+      state.wrapBlock("> ", null, node, () => state.renderContent(node));
+      return;
+    }
+
     state.write("\n:::" + (node.attrs.style || "info") + "\n");
     state.renderContent(node);
     state.ensureNewLine();
@@ -182,7 +310,10 @@ export default class Notice extends Node {
   parseMarkdown() {
     return {
       block: "container_notice",
-      getAttrs: (tok: Token) => ({ style: tok.info }),
+      getAttrs: (tok: Token) => ({
+        style: tok.info,
+        dialect: tok.meta?.dialect || NoticeDialect.Outline,
+      }),
     };
   }
 }

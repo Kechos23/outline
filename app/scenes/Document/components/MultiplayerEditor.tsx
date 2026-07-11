@@ -355,6 +355,7 @@ function MultiplayerEditor(
           embedsDisabled={props.embedsDisabled}
           defaultValue={props.defaultValue}
           extensions={props.extensions}
+          calloutStyle={props.calloutStyle}
           scrollTo={props.scrollTo}
           headingPrefix={props.headingPrefix}
           cacheOnly

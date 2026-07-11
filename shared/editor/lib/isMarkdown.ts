@@ -3,6 +3,10 @@ export default function isMarkdown(text: string): boolean {
   const lines = text.split("\n").length;
   const minConfidence = Math.min(3, Math.floor(lines / 5));
 
+  if (/^>\s*\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]\s*$/im.test(text)) {
+    return true;
+  }
+
   // code-ish
   const fences = text.match(/^```/gm);
   if (fences && fences.length > 1) {
