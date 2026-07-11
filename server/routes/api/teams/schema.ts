@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   CommentingAccess,
+  CalloutStyle,
   EmailDisplay,
   TOCPosition,
   UserRole,
@@ -75,6 +76,8 @@ export const TeamsUpdateSchema = BaseSchema.extend({
         mcp: z.boolean().optional(),
         /** List of disabled embed provider titles. */
         disabledEmbeds: z.array(z.string()).optional(),
+        /** The callout syntax and presentation used by the workspace. */
+        calloutStyle: z.enum(CalloutStyle).optional(),
       })
       .optional(),
   }),

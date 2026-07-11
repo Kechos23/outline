@@ -28,8 +28,15 @@ import styled from "styled-components";
 import { v4 as uuidv4 } from "uuid";
 import type { TFunction } from "i18next";
 import Image from "@shared/editor/components/Img";
+import {
+  GitHubAlertCautionIcon,
+  GitHubAlertImportantIcon,
+  GitHubAlertNoteIcon,
+  GitHubAlertTipIcon,
+  GitHubAlertWarningIcon,
+} from "@shared/editor/components/GitHubAlertIcons";
 import type { MenuItem } from "@shared/editor/types";
-import { MentionType } from "@shared/types";
+import { CalloutStyle, MentionType } from "@shared/types";
 import { toISODate } from "@shared/utils/date";
 import { metaDisplay } from "@shared/utils/keyboard";
 import Desktop from "~/utils/Desktop";
@@ -45,7 +52,8 @@ const Img = styled(Image)`
 
 export default function blockMenuItems(
   t: TFunction,
-  documentRef: React.RefObject<HTMLDivElement>
+  documentRef: React.RefObject<HTMLDivElement>,
+  calloutStyle = CalloutStyle.Outline
 ): MenuItem[] {
   const documentWidth = documentRef.current?.clientWidth ?? 0;
 
@@ -237,34 +245,74 @@ export default function blockMenuItems(
     {
       name: "separator",
     },
-    {
-      name: "container_notice",
-      title: t("Info notice"),
-      icon: <InfoIcon />,
-      keywords: "notice card information",
-      attrs: { style: "info" },
-    },
-    {
-      name: "container_notice",
-      title: t("Success notice"),
-      icon: <DoneIcon />,
-      keywords: "notice card success",
-      attrs: { style: "success" },
-    },
-    {
-      name: "container_notice",
-      title: t("Warning notice"),
-      icon: <WarningIcon />,
-      keywords: "notice card error",
-      attrs: { style: "warning" },
-    },
-    {
-      name: "container_notice",
-      title: t("Tip notice"),
-      icon: <StarredIcon />,
-      keywords: "notice card suggestion",
-      attrs: { style: "tip" },
-    },
+    ...(calloutStyle === CalloutStyle.GitHub
+      ? [
+          {
+            name: "container_notice",
+            title: t("Note alert"),
+            icon: <GitHubAlertNoteIcon />,
+            keywords: "alert note information",
+            attrs: { style: "note", dialect: "github" },
+          },
+          {
+            name: "container_notice",
+            title: t("Tip alert"),
+            icon: <GitHubAlertTipIcon />,
+            keywords: "alert tip suggestion",
+            attrs: { style: "tip", dialect: "github" },
+          },
+          {
+            name: "container_notice",
+            title: t("Important alert"),
+            icon: <GitHubAlertImportantIcon />,
+            keywords: "alert important",
+            attrs: { style: "important", dialect: "github" },
+          },
+          {
+            name: "container_notice",
+            title: t("Warning alert"),
+            icon: <GitHubAlertWarningIcon />,
+            keywords: "alert warning",
+            attrs: { style: "warning", dialect: "github" },
+          },
+          {
+            name: "container_notice",
+            title: t("Caution alert"),
+            icon: <GitHubAlertCautionIcon />,
+            keywords: "alert caution danger",
+            attrs: { style: "caution", dialect: "github" },
+          },
+        ]
+      : [
+          {
+            name: "container_notice",
+            title: t("Info notice"),
+            icon: <InfoIcon />,
+            keywords: "notice card information",
+            attrs: { style: "info", dialect: "outline" },
+          },
+          {
+            name: "container_notice",
+            title: t("Success notice"),
+            icon: <DoneIcon />,
+            keywords: "notice card success",
+            attrs: { style: "success", dialect: "outline" },
+          },
+          {
+            name: "container_notice",
+            title: t("Warning notice"),
+            icon: <WarningIcon />,
+            keywords: "notice card error",
+            attrs: { style: "warning", dialect: "outline" },
+          },
+          {
+            name: "container_notice",
+            title: t("Tip notice"),
+            icon: <StarredIcon />,
+            keywords: "notice card suggestion",
+            attrs: { style: "tip", dialect: "outline" },
+          },
+        ]),
     {
       name: "separator",
     },

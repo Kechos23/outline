@@ -45,6 +45,7 @@ import type {
   ProsemirrorMark,
   UserPreferences,
 } from "@shared/types";
+import { CalloutStyle } from "@shared/types";
 import { ProsemirrorHelper } from "@shared/utils/ProsemirrorHelper";
 import EventEmitter from "@shared/utils/events";
 import type Document from "~/models/Document";
@@ -165,6 +166,8 @@ export type Props = {
   embeds: EmbedDescriptor[];
   /** Display preferences for the logged in user, if any. */
   userPreferences?: UserPreferences | null;
+  /** Workspace callout presentation and export style. */
+  calloutStyle?: CalloutStyle;
   /** Whether embeds should be rendered without an iframe */
   embedsDisabled?: boolean;
   className?: string;
@@ -208,6 +211,7 @@ export class Editor extends React.PureComponent<
     },
     embeds: [],
     extensions,
+    calloutStyle: CalloutStyle.Outline,
   };
 
   state: State = {
@@ -967,6 +971,7 @@ export class Editor extends React.PureComponent<
             column
           >
             <EditorContainer
+              $calloutStyle={this.props.calloutStyle}
               $rtl={isRTL}
               grow={grow}
               readOnly={readOnly}
@@ -1019,7 +1024,31 @@ const EditorContainer = styled(Styles)<{
   userId?: string;
   focusedCommentId?: string;
   hoveredCommentId?: string;
+  $calloutStyle?: CalloutStyle;
 }>`
+  .notice-block[data-dialect]:not(
+      [data-dialect="${(props) => props.$calloutStyle}"]
+    ) {
+    display: block;
+    background: transparent;
+    border: 0;
+    color: inherit;
+    padding: 0;
+    margin: 0;
+
+    > .icon {
+      display: none;
+    }
+
+    > .github-alert-title {
+      display: none;
+    }
+
+    a {
+      color: inherit;
+    }
+  }
+
   ${(props) =>
     props.focusedCommentId &&
     css`

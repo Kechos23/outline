@@ -5,6 +5,7 @@ import {
   UserPreference,
   EmailDisplay,
   CommentingAccess,
+  CalloutStyle,
   NotificationBadgeType,
 } from "./types";
 
@@ -38,6 +39,7 @@ export const TeamPreferenceDefaults: TeamPreferences = {
   [TeamPreference.EmailDisplay]: EmailDisplay.Members,
   [TeamPreference.MCP]: true,
   [TeamPreference.DisabledEmbeds]: [],
+  [TeamPreference.CalloutStyle]: CalloutStyle.Outline,
 };
 
 export const UserPreferenceDefaults: UserPreferences = {

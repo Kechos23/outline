@@ -7,6 +7,8 @@ import Extension from "@shared/editor/lib/Extension";
 import { isInNotice } from "@shared/editor/queries/isInNotice";
 import { isMarkActive } from "@shared/editor/queries/isMarkActive";
 import { isNodeActive } from "@shared/editor/queries/isNodeActive";
+import { NoticeDialect } from "@shared/editor/nodes/Notice";
+import { CalloutStyle } from "@shared/types";
 import {
   MenuType,
   type SelectionToolbarMenuDescriptor,
@@ -102,8 +104,18 @@ export default class SelectionToolbarExtension extends Extension {
         priority: 20,
         align: "end",
         sticky: true,
-        matches: (ctx) => ctx.isInNotice && ctx.isEmpty,
-        getItems: (ctx) => getNoticeMenuItems(ctx),
+        matches: (ctx) => {
+          const node = ctx.selection.$from.node(-1);
+          const dialect = node?.attrs.dialect || NoticeDialect.Outline;
+          const activeDialect =
+            this.editor.props.calloutStyle === CalloutStyle.GitHub
+              ? NoticeDialect.GitHub
+              : NoticeDialect.Outline;
+
+          return ctx.isInNotice && ctx.isEmpty && dialect === activeDialect;
+        },
+        getItems: (ctx) =>
+          getNoticeMenuItems(ctx, this.editor.props.calloutStyle),
       },
       {
         priority: 0,
