@@ -3,7 +3,9 @@ import Redlock, {
   ResourceLockedError,
   type Lock,
   type RedlockAbortSignal,
+  type Settings,
 } from "redlock";
+import { toError } from "@shared/utils/error";
 import Redis from "@server/storage/redis";
 import Logger from "@server/logging/Logger";
 import ShutdownHelper, { ShutdownOrder } from "./ShutdownHelper";
@@ -11,15 +13,33 @@ import ShutdownHelper, { ShutdownOrder } from "./ShutdownHelper";
 type AcquireOptions = {
   /** Whether a lock should be automatically released on server shutdown */
   releaseOnShutdown?: boolean;
+  /** Overrides the default retry settings for this acquisition. */
+  retry?: Partial<Settings>;
 };
 
 /**
  * A distributed mutex lock backed by Redis, for coordinating exclusive access
  * to resources across processes.
+ *
+ * Use this when the resource is Redis or an external service, when the routine
+ * makes network calls, or when it runs long enough that holding a database
+ * connection would matter. When the routine is database work in a single
+ * transaction and the lock must be held until that transaction commits, use
+ * `LockHelper` instead.
  */
 export class MutexLock {
   /** Default expiry time for acquiring lock in milliseconds. */
   public static defaultLockTimeout = 4000;
+
+  /**
+   * Retry settings for short-lived cache locks, bounded to roughly the lock
+   * TTL. Contenders re-check the cache after acquiring, so a longer window only
+   * adds latency and retains memory during cache-miss storms.
+   */
+  public static cacheRetrySettings: Partial<Settings> = {
+    retryCount: 15,
+    retryDelay: 250,
+  };
 
   /**
    * Returns the redlock instance
@@ -60,7 +80,7 @@ export class MutexLock {
     timeout: number,
     options?: AcquireOptions
   ) {
-    const lock = await this.lock.acquire([resource], timeout);
+    const lock = await this.lock.acquire([resource], timeout, options?.retry);
     if (options?.releaseOnShutdown) {
       const key = `lock:${resource}`;
       // @ts-expect-error Attach resource for use in shutdown
@@ -90,15 +110,22 @@ export class MutexLock {
   }
 
   /**
-   * Safely release a lock
+   * Safely release a lock. Releasing is best-effort – a lock that has already
+   * expired or been taken over by another process cannot be released, and that
+   * is not an error for the caller.
    *
    * @param lock The lock to release
+   * @returns A promise that resolves to true if the lock was released
    */
-  public static release(lock: Lock) {
+  public static async release(lock: Lock): Promise<boolean> {
     try {
       if (lock && lock.expiration > new Date().getTime()) {
-        return lock.release();
+        await lock.release();
+        return true;
       }
+      return false;
+    } catch (err) {
+      Logger.warn("Failed to release Redlock lock", toError(err));
       return false;
     } finally {
       // @ts-expect-error Attach resource for use in shutdown

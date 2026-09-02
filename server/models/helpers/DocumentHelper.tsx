@@ -1,3 +1,4 @@
+import type { JSDOM } from "jsdom";
 import { Node, Fragment, type NodeType } from "prosemirror-model";
 import ukkonen from "ukkonen";
 import { updateYFragment, yDocToProsemirrorJSON } from "y-prosemirror";
@@ -10,8 +11,9 @@ import headingToSlug from "@shared/editor/lib/headingToSlug";
 import textBetween from "@shared/editor/lib/textBetween";
 import { EditorStyleHelper } from "@shared/editor/styles/EditorStyleHelper";
 import type { NavigationNode, ProsemirrorData } from "@shared/types";
-import { IconType, TextEditMode } from "@shared/types";
+import { DocumentPreference, IconType, TextEditMode } from "@shared/types";
 import { determineIconType } from "@shared/utils/icon";
+import { ProsemirrorDataHelper } from "@shared/utils/ProsemirrorDataHelper";
 import { parser, serializer, schema } from "@server/editor";
 import { ValidationError } from "@server/errors";
 import { addTags } from "@server/logging/tracer";
@@ -102,6 +104,24 @@ export class DocumentHelper {
   }
 
   /**
+   * Returns the collaborative state for a document. Documents that have never been opened in a
+   * collaborative session have no state, in which case one is derived from the content, falling
+   * back to Markdown.
+   *
+   * @param document The document to convert
+   * @returns The collaborative state
+   */
+  static toState(document: Document): Uint8Array {
+    if (document.state) {
+      return document.state;
+    }
+
+    return ProsemirrorHelper.toState(
+      ProsemirrorHelper.toYDoc(document.content ?? document.text ?? "")
+    );
+  }
+
+  /**
    * Returns the document as a plain JSON object. This method uses the derived content if available
    * then the collaborative state, otherwise it falls back to Markdown.
    *
@@ -123,7 +143,7 @@ export class DocumentHelper {
     }
   ): Promise<ProsemirrorData> {
     let doc: Node | null;
-    let data;
+    let data: ProsemirrorData;
 
     if ("content" in document && document.content) {
       // Optimized path for documents with content available and no transformation required.
@@ -152,7 +172,7 @@ export class DocumentHelper {
         options.signedUrls
       );
     } else {
-      data = doc?.toJSON() ?? {};
+      data = doc?.toJSON() ?? ProsemirrorDataHelper.getEmpty();
     }
 
     if (options?.internalUrlBase) {
@@ -276,6 +296,12 @@ export class DocumentHelper {
       signedUrls?: number;
       /** The team context */
       teamId?: string;
+      /**
+       * Whether the Markdown is leaving Outline, in which case portable
+       * CommonMark is written in place of Outline's internal representation
+       * (default: false)
+       */
+      commonMark?: boolean;
     }
   ) {
     let node = DocumentHelper.toProsemirror(document);
@@ -290,7 +316,7 @@ export class DocumentHelper {
     }
 
     const text = serializer
-      .serialize(node)
+      .serialize(node, { commonMark: options?.commonMark })
       .replace(/(^|\n)\\(\n|$)/g, "\n\n")
       .trim();
 
@@ -322,6 +348,15 @@ export class DocumentHelper {
     options?: HTMLOptions
   ) {
     const node = DocumentHelper.toProsemirror(model);
+    // Heading numbering is a preference of the document, which a revision
+    // inherits from the document it belongs to.
+    const document =
+      model instanceof Document
+        ? model
+        : model instanceof Revision
+          ? await model.$get("document")
+          : null;
+
     let output = await ProsemirrorHelper.toHTML(node, {
       title:
         options?.includeTitle !== false
@@ -336,6 +371,7 @@ export class DocumentHelper {
       baseUrl: options?.baseUrl,
       changes: options?.changes,
       cspNonce: options?.cspNonce,
+      headingPrefix: document?.getPreference(DocumentPreference.HeadingPrefix),
     });
 
     addTags({
@@ -345,9 +381,7 @@ export class DocumentHelper {
 
     if (options?.signedUrls) {
       const teamId =
-        model instanceof Collection || model instanceof Document
-          ? model.teamId
-          : (await model.$get("document"))?.teamId;
+        model instanceof Collection ? model.teamId : document?.teamId;
 
       if (!teamId) {
         return output;
@@ -431,23 +465,62 @@ export class DocumentHelper {
    * @param before The before document
    * @param after The after document
    * @param options Options passed to HTML generation
-   * @returns The diff as a HTML string
+   * @returns The diff as an HTML string, an empty string when there is no
+   * before document, or undefined when the documents contain no changes or
+   * the changeset was too expensive to compute.
    */
   static async toEmailDiff(
     before: Document | Revision | null,
     after: Revision,
     options?: HTMLOptions
-  ) {
+  ): Promise<string | undefined> {
     if (!before) {
       return "";
     }
 
-    const html = await DocumentHelper.diff(before, after, options);
+    addTags({
+      beforeId: before.id,
+      documentId: after.documentId,
+      options,
+    });
+
+    const beforeJSON = await DocumentHelper.toJSON(before);
+    const afterJSON = await DocumentHelper.toJSON(after);
+    const changeset = ChangesetHelper.getChangeset(afterJSON, beforeJSON);
+
+    // Without a changeset no diff elements can render, so skip the expensive
+    // HTML generation and clipping entirely.
+    if (!changeset?.changes.length) {
+      return undefined;
+    }
+
+    const html = await DocumentHelper.toHTML(after, {
+      ...options,
+      changes: changeset.changes,
+    });
     // Loaded lazily to keep jsdom off the startup path — only HTML export needs it.
     const { JSDOM } = await import("jsdom");
     const dom = new JSDOM(html);
-    const doc = dom.window.document;
+    try {
+      return DocumentHelper.clipEmailDiff(dom.window.document);
+    } finally {
+      try {
+        dom.window.close();
+      } catch (_err) {
+        // Best effort, closing the window releases its timers and resources.
+      }
+    }
+  }
 
+  /**
+   * Clips a rendered diff document down to only the changed nodes and their
+   * surrounding context, returning the resulting HTML or undefined when the
+   * document contains no diff elements.
+   *
+   * @param doc The rendered diff document to clip.
+   * @returns The clipped HTML, or undefined when there is nothing to show.
+   */
+  private static clipEmailDiff(doc: JSDOM["window"]["document"]) {
     const containsDiffElement = (node: Element | null) => {
       if (!node) {
         return false;

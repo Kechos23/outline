@@ -5,12 +5,13 @@ import documentCreator, {
   authorizeDocumentCreate,
   authorizeDocumentPublish,
 } from "@server/commands/documentCreator";
-import documentImporter from "@server/commands/documentImporter";
 import documentMover from "@server/commands/documentMover";
 import documentRestorer from "@server/commands/documentRestorer";
 import documentUpdater from "@server/commands/documentUpdater";
 import { Collection, Document, SearchQuery, Template } from "@server/models";
 import { SearchQuerySource } from "@server/models/SearchQuery";
+import { combineFilters } from "@server/models/helpers/Filters";
+import DocumentImportTask from "@server/queues/tasks/DocumentImportTask";
 import { sequelize } from "@server/storage/database";
 import { authorize, can } from "@server/policies";
 import {
@@ -27,11 +28,15 @@ import {
   getActorFromContext,
   getBreadcrumbsForDocuments,
   getDocumentBreadcrumb,
+  getPublicShareUrlForDocument,
+  getPublicShareUrlsForDocuments,
   optionalString,
   pathToUrl,
   withTracing,
 } from "./util";
-import { StatusFilter, TextEditMode } from "@shared/types";
+import { ValidationError } from "@server/errors";
+import { TextEditMode } from "@shared/types";
+import type { Filter } from "@shared/helpers/FilterHelper";
 import SearchProviderManager from "@server/utils/SearchProviderManager";
 
 /**
@@ -68,7 +73,7 @@ export function documentTools(server: McpServer, scopes: string[]) {
       {
         title: "Search documents",
         description:
-          "Searches documents the user has access to. Performs full-text search across document content when a query is provided, or lists recent documents when no query is given. Optionally filter by collection. To retrieve the full contents or hierarchy of a specific collection, use list_collection_documents instead.",
+          "Searches documents the user has access to. Performs full-text search across document content when a query is provided, or lists recent documents when no query is given. Archived documents are excluded unless includeArchived is set. Optionally filter by collection. To retrieve the full contents or hierarchy of a specific collection, use list_collection_documents instead.",
         annotations: {
           idempotentHint: true,
           readOnlyHint: true,
@@ -80,6 +85,12 @@ export function documentTools(server: McpServer, scopes: string[]) {
           collectionId: optionalString().describe(
             "A collection ID to filter documents by."
           ),
+          includeArchived: z
+            .boolean()
+            .optional()
+            .describe(
+              "Whether to include archived documents in the results. Defaults to false, as archived documents are usually outdated."
+            ),
           offset: z.coerce
             .number()
             .int()
@@ -99,7 +110,10 @@ export function documentTools(server: McpServer, scopes: string[]) {
       },
       withTracing(
         "list_documents",
-        async ({ query, collectionId, offset, limit }, extra) => {
+        async (
+          { query, collectionId, includeArchived, offset, limit },
+          extra
+        ) => {
           try {
             const user = getActorFromContext(extra);
             const effectiveOffset = offset ?? 0;
@@ -142,11 +156,25 @@ export function documentTools(server: McpServer, scopes: string[]) {
               }
 
               const searchStartedAt = Date.now();
+              const searchFilters: Filter[] = [];
+              if (!includeArchived) {
+                searchFilters.push({
+                  field: "archivedAt",
+                  operator: "isNull",
+                });
+              }
+              if (collectionId) {
+                searchFilters.push({
+                  field: "collectionId",
+                  operator: "eq",
+                  value: collectionId,
+                });
+              }
               const { results, total } = await searchProvider.searchForUser(
                 user,
                 {
                   query,
-                  collectionId,
+                  filter: combineFilters(searchFilters),
                   offset: effectiveOffset,
                   limit: effectiveLimit,
                 }
@@ -168,13 +196,17 @@ export function documentTools(server: McpServer, scopes: string[]) {
               const filteredResults = results.filter(
                 (result) => result.document.id !== exactMatch?.id
               );
-              const breadcrumbs = await getBreadcrumbsForDocuments(
-                [
-                  ...(exactMatch ? [exactMatch] : []),
-                  ...filteredResults.map((r) => r.document),
-                ],
-                user
-              );
+              const matchedDocuments = [
+                ...(exactMatch ? [exactMatch] : []),
+                ...filteredResults.map((r) => r.document),
+              ];
+              const [breadcrumbs, shareUrls] = await Promise.all([
+                getBreadcrumbsForDocuments(matchedDocuments, user),
+                getPublicShareUrlsForDocuments(
+                  user.team,
+                  matchedDocuments.map((doc) => doc.id)
+                ),
+              ]);
 
               const presented = await Promise.all(
                 filteredResults.map(async (result) => {
@@ -186,10 +218,12 @@ export function documentTools(server: McpServer, scopes: string[]) {
                     })
                   );
                   const breadcrumb = breadcrumbs.get(result.document.id);
+                  const shareUrl = shareUrls.get(result.document.id);
                   const siblingIndex = indexMap?.get(result.document.id);
                   return {
                     document: doc,
                     ...(breadcrumb !== undefined && { breadcrumb }),
+                    ...(shareUrl !== undefined && { shareUrl }),
                     context: result.context,
                     ...(siblingIndex !== undefined && {
                       index: siblingIndex,
@@ -207,10 +241,12 @@ export function documentTools(server: McpServer, scopes: string[]) {
                   })
                 );
                 const breadcrumb = breadcrumbs.get(exactMatch.id);
+                const shareUrl = shareUrls.get(exactMatch.id);
                 const siblingIndex = indexMap?.get(exactMatch.id);
                 presented.unshift({
                   document: doc,
                   ...(breadcrumb !== undefined && { breadcrumb }),
+                  ...(shareUrl !== undefined && { shareUrl }),
                   context: undefined,
                   ...(siblingIndex !== undefined && { index: siblingIndex }),
                 });
@@ -222,19 +258,34 @@ export function documentTools(server: McpServer, scopes: string[]) {
             // List recent documents via the search provider (with no query) so
             // access control matches the search path exactly.
             const searchProvider = SearchProviderManager.getProvider();
+            const filters: Filter[] = [
+              { field: "publishedAt", operator: "isNotNull" },
+            ];
+            if (!includeArchived) {
+              filters.push({ field: "archivedAt", operator: "isNull" });
+            }
+            if (collectionId) {
+              filters.push({
+                field: "collectionId",
+                operator: "eq",
+                value: collectionId,
+              });
+            }
             const { results } = await searchProvider.searchForUser(user, {
-              collectionId,
+              filter: { operator: "AND", filters },
               offset: effectiveOffset,
               limit: effectiveLimit,
-              statusFilter: [StatusFilter.Published],
             });
 
             const documents = results.map((result) => result.document);
 
-            const breadcrumbs = await getBreadcrumbsForDocuments(
-              documents,
-              user
-            );
+            const [breadcrumbs, shareUrls] = await Promise.all([
+              getBreadcrumbsForDocuments(documents, user),
+              getPublicShareUrlsForDocuments(
+                user.team,
+                documents.map((document) => document.id)
+              ),
+            ]);
 
             const presented = await Promise.all(
               documents.map(async (document) => {
@@ -246,10 +297,12 @@ export function documentTools(server: McpServer, scopes: string[]) {
                   })
                 );
                 const breadcrumb = breadcrumbs.get(document.id);
+                const shareUrl = shareUrls.get(document.id);
                 const siblingIndex = indexMap?.get(document.id);
                 return {
                   document: doc,
                   ...(breadcrumb !== undefined && { breadcrumb }),
+                  ...(shareUrl !== undefined && { shareUrl }),
                   ...(siblingIndex !== undefined && { index: siblingIndex }),
                 };
               })
@@ -336,6 +389,9 @@ export function documentTools(server: McpServer, scopes: string[]) {
             .describe(
               'The format of the text content. Defaults to "markdown"; use "html" for rich HTML input.'
             ),
+          sourceFileName: optionalString().describe(
+            'The name of the file the content was read from, e.g. "notes.md". Recorded on the document and shown to users as the file it was imported from, so only set it when the content genuinely came from a file. Also used as the title when the content has no heading and no title is given.'
+          ),
           collectionId: optionalString().describe(
             "The collection to place the document in."
           ),
@@ -346,7 +402,7 @@ export function documentTools(server: McpServer, scopes: string[]) {
             "The ID of a template to pre-fill the new document from. The template's title, content, icon, and color are used unless overridden by the corresponding parameters."
           ),
           icon: optionalString().describe(
-            "An icon for the document, e.g. an emoji."
+            "An icon for the document. May be an emoji or a named icon; read the outline://icons resource for the list of available icon names."
           ),
           color: optionalString().describe(
             "The hex color for the document icon, e.g. #FF0000."
@@ -384,53 +440,62 @@ export function documentTools(server: McpServer, scopes: string[]) {
             authorize(user, "read", template);
           }
 
-          const imported =
+          // Parsing HTML loads a full DOM, which would block the event loop for
+          // every other request, so hand it to a worker instead.
+          const document =
             input.format === "html"
-              ? await documentImporter({
-                  user,
-                  fileName: "document.html",
-                  mimeType: "text/html",
+              ? await DocumentImportTask.scheduleAndWait({
                   content: input.text ?? "",
-                  ctx,
+                  sourceMetadata: {
+                    fileName: input.sourceFileName ?? "document.html",
+                    mimeType: "text/html",
+                  },
+                  attributes: {
+                    title: input.title,
+                    icon: input.icon,
+                    color: input.color,
+                    fullWidth: input.fullWidth,
+                  },
+                  userId: user.id,
+                  publish: input.publish !== false,
+                  collectionId: collection?.id,
+                  parentDocumentId,
+                  authType: ctx.state.auth.type,
+                  ip: ctx.context.ip,
                 })
-              : undefined;
+              : await sequelize.transaction(async (transaction) => {
+                  ctx.state.transaction = transaction;
+                  ctx.context.transaction = transaction;
 
-          const document = await documentCreator(ctx, {
-            title: input.title ?? imported?.title,
-            text: imported?.text ?? input.text,
-            state: imported?.state,
-            icon: input.icon ?? imported?.icon,
-            color: input.color,
-            parentDocumentId: parentDocumentId,
-            publish: input.publish !== false,
-            collectionId: collection?.id,
-            template: imported ? undefined : template,
-            fullWidth: input.fullWidth,
-          });
+                  return documentCreator(ctx, {
+                    title: input.title,
+                    text: input.text,
+                    icon: input.icon,
+                    color: input.color,
+                    parentDocumentId,
+                    publish: input.publish !== false,
+                    collectionId: collection?.id,
+                    template,
+                    fullWidth: input.fullWidth,
+                    sourceMetadata: input.sourceFileName
+                      ? {
+                          fileName: input.sourceFileName,
+                          mimeType: "text/markdown",
+                        }
+                      : undefined,
+                  });
+                });
 
-          const [{ text, ...attributes }, breadcrumb] = await Promise.all([
-            presentDocument(document, {
-              includeData: false,
-              includeText: true,
-              includeUpdatedAt: true,
+          const breadcrumb = await getDocumentBreadcrumb(document, user);
+          return success({
+            success: true,
+            ...pathToUrl(user.team, {
+              id: document.id,
+              title: document.title,
+              url: document.url,
             }),
-            getDocumentBreadcrumb(document, user),
-          ]);
-          return {
-            content: [
-              {
-                type: "text" as const,
-                text: JSON.stringify({
-                  document: pathToUrl(user.team, attributes),
-                  ...(breadcrumb !== undefined && { breadcrumb }),
-                }),
-              },
-              {
-                type: "text" as const,
-                text: typeof text === "string" ? text : "",
-              },
-            ],
-          } satisfies CallToolResult;
+            ...(breadcrumb !== undefined && { breadcrumb }),
+          });
         } catch (message) {
           return error(message);
         }
@@ -474,7 +539,7 @@ export function documentTools(server: McpServer, scopes: string[]) {
           const ctx = buildAPIContext(context);
           const { user } = ctx.state.auth;
 
-          return await sequelize.transaction(async (transaction) => {
+          const document = await sequelize.transaction(async (transaction) => {
             ctx.state.transaction = transaction;
             ctx.context.transaction = transaction;
 
@@ -490,7 +555,7 @@ export function documentTools(server: McpServer, scopes: string[]) {
 
             if (input.parentDocumentId) {
               if (input.parentDocumentId === input.id) {
-                return error("Cannot nest a document inside itself");
+                throw ValidationError("Cannot nest a document inside itself");
               }
 
               const parent = await Document.findByPk(input.parentDocumentId, {
@@ -503,10 +568,10 @@ export function documentTools(server: McpServer, scopes: string[]) {
               collectionId = parent.collectionId!;
 
               if (!parent.publishedAt) {
-                return error("Cannot move document inside a draft");
+                throw ValidationError("Cannot move document inside a draft");
               }
             } else if (!collectionId) {
-              return error(
+              throw ValidationError(
                 "Either collectionId or parentDocumentId is required"
               );
             } else {
@@ -518,48 +583,26 @@ export function documentTools(server: McpServer, scopes: string[]) {
               authorize(user, "updateDocument", collection);
             }
 
-            const { documents, collections } = await documentMover(ctx, {
+            await documentMover(ctx, {
               document,
               collectionId: collectionId ?? null,
               parentDocumentId: input.parentDocumentId ?? null,
               index: input.index,
             });
 
-            const indexMap = new Map<string, number>();
-            for (const col of collections) {
-              if (col.documentStructure) {
-                for (const [id, idx] of buildSiblingIndexMap(
-                  col.documentStructure
-                )) {
-                  indexMap.set(id, idx);
-                }
-              }
-            }
+            return document;
+          });
 
-            const breadcrumbs = await getBreadcrumbsForDocuments(
-              documents,
-              user
-            );
-
-            const presented = await Promise.all(
-              documents.map(async (document) => {
-                const doc = pathToUrl(
-                  user.team,
-                  await presentDocument(document, {
-                    includeData: false,
-                    includeText: false,
-                  })
-                );
-                const breadcrumb = breadcrumbs.get(document.id);
-                const siblingIndex = indexMap.get(document.id);
-                return {
-                  document: doc,
-                  ...(breadcrumb !== undefined && { breadcrumb }),
-                  ...(siblingIndex !== undefined && { index: siblingIndex }),
-                };
-              })
-            );
-            return success(presented);
+          // Resolved after commit so the breadcrumb reflects the new location.
+          const breadcrumb = await getDocumentBreadcrumb(document, user);
+          return success({
+            success: true,
+            ...pathToUrl(user.team, {
+              id: document.id,
+              title: document.title,
+              url: document.url,
+            }),
+            ...(breadcrumb !== undefined && { breadcrumb }),
           });
         } catch (message) {
           return error(message);
@@ -607,7 +650,7 @@ export function documentTools(server: McpServer, scopes: string[]) {
             .nullable()
             .optional()
             .describe(
-              "An icon for the document, e.g. an emoji. Set to null to remove."
+              "An icon for the document. Set to null to remove. May be an emoji or a named icon; read the outline://icons resource for the list of available icon names."
             ),
           color: z
             .string()
@@ -675,14 +718,32 @@ export function documentTools(server: McpServer, scopes: string[]) {
             }
           }
 
-          const [{ text, ...attributes }, breadcrumb] = await Promise.all([
-            presentDocument(updated, {
-              includeData: false,
-              includeText: true,
-              includeUpdatedAt: true,
-            }),
-            getDocumentBreadcrumb(updated, user),
-          ]);
+          // A patch only rewrites part of the document, so the resulting
+          // content is echoed back for the caller to verify what was applied.
+          // Other modes have nothing to report beyond the write succeeding.
+          if (input.editMode !== TextEditMode.Patch) {
+            const breadcrumb = await getDocumentBreadcrumb(updated, user);
+            return success({
+              success: true,
+              ...pathToUrl(user.team, {
+                id: updated.id,
+                title: updated.title,
+                url: updated.url,
+              }),
+              ...(breadcrumb !== undefined && { breadcrumb }),
+            });
+          }
+
+          const [{ text, ...attributes }, breadcrumb, shareUrl] =
+            await Promise.all([
+              presentDocument(updated, {
+                includeData: false,
+                includeText: true,
+                includeUpdatedAt: true,
+              }),
+              getDocumentBreadcrumb(updated, user),
+              getPublicShareUrlForDocument(user.team, updated.id),
+            ]);
           return {
             content: [
               {
@@ -690,6 +751,7 @@ export function documentTools(server: McpServer, scopes: string[]) {
                 text: JSON.stringify({
                   document: pathToUrl(user.team, attributes),
                   ...(breadcrumb !== undefined && { breadcrumb }),
+                  ...(shareUrl !== undefined && { shareUrl }),
                 }),
               },
               {
@@ -785,7 +847,7 @@ export function documentTools(server: McpServer, scopes: string[]) {
           const ctx = buildAPIContext(context);
           const { user } = ctx.state.auth;
 
-          return await sequelize.transaction(async (transaction) => {
+          const document = await sequelize.transaction(async (transaction) => {
             ctx.state.transaction = transaction;
             ctx.context.transaction = transaction;
 
@@ -797,34 +859,24 @@ export function documentTools(server: McpServer, scopes: string[]) {
             });
 
             if (!document.deletedAt && !document.archivedAt) {
-              return error("Document is not archived or trashed");
+              throw ValidationError("Document is not archived or trashed");
             }
 
             await documentRestorer(ctx, { document, collectionId });
 
-            const [{ text, ...attributes }, breadcrumb] = await Promise.all([
-              presentDocument(document, {
-                includeData: false,
-                includeText: true,
-                includeUpdatedAt: true,
-              }),
-              getDocumentBreadcrumb(document, user),
-            ]);
-            return {
-              content: [
-                {
-                  type: "text" as const,
-                  text: JSON.stringify({
-                    document: pathToUrl(user.team, attributes),
-                    ...(breadcrumb !== undefined && { breadcrumb }),
-                  }),
-                },
-                {
-                  type: "text" as const,
-                  text: typeof text === "string" ? text : "",
-                },
-              ],
-            } satisfies CallToolResult;
+            return document;
+          });
+
+          // Resolved after commit so the breadcrumb reflects the new location.
+          const breadcrumb = await getDocumentBreadcrumb(document, user);
+          return success({
+            success: true,
+            ...pathToUrl(user.team, {
+              id: document.id,
+              title: document.title,
+              url: document.url,
+            }),
+            ...(breadcrumb !== undefined && { breadcrumb }),
           });
         } catch (message) {
           return error(message);

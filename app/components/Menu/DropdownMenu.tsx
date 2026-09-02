@@ -10,11 +10,12 @@ import {
 } from "~/components/primitives/Drawer";
 import { Menu, MenuContent, MenuTrigger } from "~/components/primitives/Menu";
 import { MenuProvider } from "~/components/primitives/Menu/MenuContext";
-import { actionToMenuItem } from "~/actions";
+import { actionToMenuItem, hasVisibleActions } from "~/actions";
 import useActionContext from "~/hooks/useActionContext";
 import useMobile from "~/hooks/useMobile";
 import { preventDefault } from "~/utils/events";
 import type {
+  ActionFactory,
   ActionVariant,
   ActionWithChildren,
   MenuItem,
@@ -26,7 +27,7 @@ import { useComputed } from "~/hooks/useComputed";
 
 type Props = {
   /** Root action with children representing the menu items */
-  action: ActionWithChildren;
+  action: ActionWithChildren | ActionFactory;
   /** Trigger for the menu */
   children: React.ReactNode;
   /** Alignment w.r.t trigger - defaults to start */
@@ -77,10 +78,23 @@ export const DropdownMenu = observer(
           return [];
         }
 
-        return (action.children as ActionVariant[]).map((childAction) =>
+        const resolvedAction = typeof action === "function" ? action() : action;
+
+        return (resolvedAction.children as ActionVariant[]).map((childAction) =>
           actionToMenuItem(childAction, actionContext)
         );
-      }, [open, action.children, actionContext]);
+      }, [open, action, actionContext]);
+
+      // Only visibility is resolved while the menu is closed, the remainder of
+      // each item is resolved when it is opened.
+      const isEmpty = useComputed(() => {
+        const resolvedAction = typeof action === "function" ? action() : action;
+
+        return !hasVisibleActions(
+          resolvedAction.children as ActionVariant[],
+          actionContext
+        );
+      }, [action, actionContext]);
 
       const handleOpenChange = React.useCallback(
         (open: boolean) => {
@@ -105,6 +119,10 @@ export const DropdownMenu = observer(
           contentRef.current.style.pointerEvents = "none";
         }
       }, []);
+
+      if (isEmpty && !append) {
+        return null;
+      }
 
       if (isMobile) {
         return (

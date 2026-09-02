@@ -16,7 +16,6 @@ import {
   TextSelection,
 } from "prosemirror-state";
 import { Decoration, DecorationSet, type EditorView } from "prosemirror-view";
-import { toast } from "sonner";
 import type { Primitive } from "utility-types";
 import type { UserPreferences } from "../../types";
 import { isBrowser, isMac } from "../../utils/browser";
@@ -38,11 +37,12 @@ import Mermaid, {
   type MermaidState,
 } from "../extensions/Mermaid";
 import {
+  codeLanguages,
   getRecentlyUsedCodeLanguage,
   setRecentlyUsedCodeLanguage,
 } from "../lib/code";
 import { isCode, isMermaid } from "../lib/isCode";
-import { isRemoteTransaction } from "../lib/multiplayer";
+import { isRemoteTransaction, mapDecorations } from "../lib/multiplayer";
 import { findBlockNodes } from "../queries/findChildren";
 import type { MarkdownSerializerState } from "../lib/markdown/serializer";
 import { escapeRawTableCell } from "../lib/markdown/tableCell";
@@ -63,6 +63,20 @@ const COLLAPSE_HEIGHT_RATIO = 0.5;
 
 /** Approximate rendered line height of a code block, in pixels. */
 const CODE_LINE_HEIGHT = 20;
+
+/**
+ * Reduce a language attribute or fence info string to a single safe token, so
+ * it cannot break the fence line when written back to markdown.
+ *
+ * @param language - the language attribute or fence info string.
+ * @returns the first whitespace-separated token with backticks removed.
+ */
+function sanitizeLanguage(language: string | null | undefined): string {
+  return String(language ?? "")
+    .replace(/`/g, "")
+    .trim()
+    .split(/\s/)[0];
+}
 
 interface CollapseState {
   /** Positions of code blocks taller than COLLAPSE_HEIGHT_RATIO of the viewport. */
@@ -185,7 +199,9 @@ export default class CodeFence extends Node<CodeFenceOptions> {
       attrs: {
         language: {
           default: DEFAULT_LANGUAGE,
-          validate: "string",
+          // Null is permitted as existing documents can contain code blocks
+          // written before a language was always recorded.
+          validate: "string|null",
         },
         wrap: {
           default: false,
@@ -351,7 +367,7 @@ export default class CodeFence extends Node<CodeFenceOptions> {
 
         if (codeBlock) {
           copy(codeBlock.node.textContent);
-          toast.message(t("Copied to clipboard"));
+          this.editor.props.onNotice?.(t("Copied to clipboard"));
           return true;
         }
 
@@ -372,7 +388,7 @@ export default class CodeFence extends Node<CodeFenceOptions> {
           dispatch?.(tr);
 
           copy(tr.doc.textBetween(state.selection.from, state.selection.to));
-          toast.message(t("Copied to clipboard"));
+          this.editor.props.onNotice?.(t("Copied to clipboard"));
           return true;
         }
 
@@ -429,7 +445,7 @@ export default class CodeFence extends Node<CodeFenceOptions> {
             const tallBlocks = findTallBlocks(state.doc);
             return build(state.doc, tallBlocks, new Set(tallBlocks));
           },
-          apply: (tr, prev, _oldState, newState) => {
+          apply: (tr, prev, oldState, newState) => {
             const meta = tr.getMeta(collapseKey);
 
             // Toggle collapsed state
@@ -460,15 +476,53 @@ export default class CodeFence extends Node<CodeFenceOptions> {
             if (tr.docChanged) {
               const tallBlocks = findTallBlocks(newState.doc);
               const collapsedBlocks = new Set<number>();
-              const isRemote = isRemoteTransaction(tr);
+              const isRemote = isRemoteTransaction(tr, newState);
+              const previousBlockDecorations: Decoration[] = [];
+              for (const pos of prev.tallBlocks) {
+                const node = oldState.doc.nodeAt(pos);
+                if (!node || !isCode(node)) {
+                  continue;
+                }
 
-              const inverse = tr.mapping.invert();
+                previousBlockDecorations.push(
+                  Decoration.node(
+                    pos,
+                    pos + node.nodeSize,
+                    {},
+                    {
+                      collapsed: prev.collapsedBlocks.has(pos),
+                      trackedCodeBlock: true,
+                    }
+                  )
+                );
+              }
+
+              const mappedTallBlocks = new Set<number>();
+              const mappedCollapsedBlocks = new Set<number>();
+              const previousBlocks = DecorationSet.create(
+                oldState.doc,
+                previousBlockDecorations
+              );
+              for (const decoration of mapDecorations(
+                previousBlocks,
+                tr,
+                newState
+              ).find()) {
+                if (!decoration.spec.trackedCodeBlock) {
+                  continue;
+                }
+
+                mappedTallBlocks.add(decoration.from);
+                if (decoration.spec.collapsed) {
+                  mappedCollapsedBlocks.add(decoration.from);
+                }
+              }
+
               for (const pos of tallBlocks) {
-                const oldPos = inverse.map(pos);
-                if (isRemote && !prev.tallBlocks.has(oldPos)) {
+                if (isRemote && !mappedTallBlocks.has(pos)) {
                   // Newly tall blocks start collapsed on load
                   collapsedBlocks.add(pos);
-                } else if (prev.collapsedBlocks.has(oldPos)) {
+                } else if (mappedCollapsedBlocks.has(pos)) {
                   // Preserve previous collapsed state
                   collapsedBlocks.add(pos);
                 }
@@ -696,9 +750,17 @@ export default class CodeFence extends Node<CodeFenceOptions> {
 
   inputRules({ type }: { type: NodeType }) {
     return [
-      textblockTypeInputRule(/^```$/, type, () => ({
-        language: getRecentlyUsedCodeLanguage() ?? DEFAULT_LANGUAGE,
-      })),
+      textblockTypeInputRule(/^```([a-zA-Z0-9+#-]*)\s$/, type, (match) => {
+        const language = match[1].toLowerCase();
+        return {
+          language: Object.prototype.hasOwnProperty.call(
+            codeLanguages,
+            language
+          )
+            ? language
+            : (getRecentlyUsedCodeLanguage() ?? DEFAULT_LANGUAGE),
+        };
+      }),
     ];
   }
 
@@ -709,10 +771,17 @@ export default class CodeFence extends Node<CodeFenceOptions> {
       ? escapeRawTableCell(node.textContent)
       : node.textContent;
 
-    state.write("```" + (node.attrs.language || "") + "\n");
+    // The fence must be longer than any backtick run in the content, or the
+    // content could terminate the fence early when the markdown is parsed.
+    const backticks = content.match(/`{3,}/g);
+    const fence = "`".repeat(
+      backticks ? Math.max(...backticks.map((run) => run.length)) + 1 : 3
+    );
+
+    state.write(fence + sanitizeLanguage(node.attrs.language) + "\n");
     state.text(content, false);
     state.ensureNewLine();
-    state.write("```");
+    state.write(fence);
     state.closeBlock(node);
   }
 
@@ -723,7 +792,7 @@ export default class CodeFence extends Node<CodeFenceOptions> {
   parseMarkdown() {
     return {
       block: "code_block",
-      getAttrs: (tok: Token) => ({ language: tok.info }),
+      getAttrs: (tok: Token) => ({ language: sanitizeLanguage(tok.info) }),
       noCloseToken: true,
     };
   }

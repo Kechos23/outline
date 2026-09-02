@@ -2,9 +2,10 @@ import { z } from "zod";
 import { Sequelize, Op, type WhereOptions } from "sequelize";
 import { type McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Collection, Team } from "@server/models";
+import { buildWhere } from "@server/models/helpers/Filters";
 import { sequelize } from "@server/storage/database";
 import { authorize } from "@server/policies";
-import { presentCollection } from "@server/presenters";
+import { presentCollection as presentCollectionBase } from "@server/presenters";
 import AuthenticationHelper from "@shared/helpers/AuthenticationHelper";
 import { UrlHelper } from "@shared/utils/UrlHelper";
 import {
@@ -12,10 +13,26 @@ import {
   error,
   getActorFromContext,
   buildAPIContext,
+  getPublicShareUrlsForCollections,
   optionalString,
   pathToUrl,
   withTracing,
 } from "./util";
+
+/**
+ * Presents a collection for a tool response. Includes a markdown description
+ * instead of ProseMirror JSON so that MCP consumers (typically AI agents) can
+ * read it directly.
+ *
+ * @param collection - the collection to present.
+ * @returns the presented collection object.
+ */
+export function presentCollection(collection: Collection) {
+  return presentCollectionBase(undefined, collection, {
+    includeData: false,
+    includeText: true,
+  });
+}
 
 /**
  * Registers collection-related MCP tools on the given server, filtered by
@@ -72,9 +89,11 @@ export function collectionTools(server: McpServer, scopes: string[]) {
 
             if (query) {
               and.push(
-                Sequelize.literal(
-                  `unaccent(LOWER(name)) like unaccent(LOWER(:query))`
-                ) as unknown as WhereOptions<Collection>
+                buildWhere<Collection>({
+                  field: "name",
+                  operator: "contains",
+                  value: query,
+                })
               );
             }
 
@@ -87,7 +106,6 @@ export function collectionTools(server: McpServer, scopes: string[]) {
               method: ["withMembership", user.id],
             }).findAll({
               where,
-              replacements: { query: `%${query}%` },
               order: [
                 Sequelize.literal('"collection"."index" collate "C"'),
                 ["updatedAt", "DESC"],
@@ -108,27 +126,35 @@ export function collectionTools(server: McpServer, scopes: string[]) {
               }
             }
 
-            const presented = await Promise.all(
-              collections
-                .filter((c) => c.id !== exactMatch?.id)
-                .map(async (collection) =>
-                  pathToUrl(
+            const matchedCollections = [
+              ...(exactMatch ? [exactMatch] : []),
+              ...collections.filter((c) => c.id !== exactMatch?.id),
+            ];
+            const [shareUrls, presented] = await Promise.all([
+              getPublicShareUrlsForCollections(
+                user.team,
+                matchedCollections.map((c) => c.id)
+              ),
+              Promise.all(
+                matchedCollections.map(async (collection) => ({
+                  collection,
+                  presented: pathToUrl(
                     user.team,
-                    await presentCollection(undefined, collection)
-                  )
-                )
-            );
+                    await presentCollection(collection)
+                  ),
+                }))
+              ),
+            ]);
 
-            if (exactMatch) {
-              presented.unshift(
-                pathToUrl(
-                  user.team,
-                  await presentCollection(undefined, exactMatch)
-                )
-              );
-            }
+            const results = presented.map(({ collection, presented }) => {
+              const shareUrl = shareUrls.get(collection.id);
+              return {
+                ...presented,
+                ...(shareUrl !== undefined && { shareUrl }),
+              };
+            });
 
-            return success(presented);
+            return success(results);
           } catch (message) {
             return error(message);
           }
@@ -155,7 +181,7 @@ export function collectionTools(server: McpServer, scopes: string[]) {
             .optional()
             .describe("A markdown description for the collection."),
           icon: optionalString().describe(
-            "An icon for the collection, e.g. an emoji."
+            "An icon for the collection. May be an emoji or a named icon; read the outline://icons resource for the list of available icon names."
           ),
           color: optionalString().describe(
             "The hex color for the collection icon, e.g. #FF0000."
@@ -183,16 +209,14 @@ export function collectionTools(server: McpServer, scopes: string[]) {
 
           await collection.saveWithCtx(ctx);
 
-          const reloaded = await Collection.findByPk(collection.id, {
-            userId: user.id,
-            rejectOnEmpty: true,
+          return success({
+            success: true,
+            ...pathToUrl(user.team, {
+              id: collection.id,
+              name: collection.name,
+              url: collection.path,
+            }),
           });
-
-          const presented = pathToUrl(
-            user.team,
-            await presentCollection(undefined, reloaded)
-          );
-          return success(presented);
         } catch (message) {
           return error(message);
         }
@@ -225,7 +249,7 @@ export function collectionTools(server: McpServer, scopes: string[]) {
             .nullable()
             .optional()
             .describe(
-              "An icon for the collection, e.g. an emoji. Set to null to remove."
+              "An icon for the collection. Set to null to remove. May be an emoji or a named icon; read the outline://icons resource for the list of available icon names."
             ),
           color: z
             .string()
@@ -272,11 +296,14 @@ export function collectionTools(server: McpServer, scopes: string[]) {
 
           await collection.saveWithCtx(ctx);
 
-          const presented = pathToUrl(
-            user.team,
-            await presentCollection(undefined, collection)
-          );
-          return success(presented);
+          return success({
+            success: true,
+            ...pathToUrl(user.team, {
+              id: collection.id,
+              name: collection.name,
+              url: collection.path,
+            }),
+          });
         } catch (message) {
           return error(message);
         }

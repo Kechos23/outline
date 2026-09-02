@@ -7,7 +7,6 @@ import type { Node } from "prosemirror-model";
 import type { Transaction } from "prosemirror-state";
 import { NodeSelection, Plugin, PluginKey } from "prosemirror-state";
 import { Decoration, DecorationSet } from "prosemirror-view";
-import { toast } from "sonner";
 import { errToString } from "../../utils/error";
 import { isCode, isMermaid } from "../lib/isCode";
 import { isRemoteTransaction, mapDecorations } from "../lib/multiplayer";
@@ -17,6 +16,7 @@ import type { NodeWithPos } from "../types";
 import type { Editor } from "../../../app/editor";
 import { LightboxImageFactory } from "../lib/Lightbox";
 import { hashString } from "../../utils/string";
+import { LRUCache } from "../../utils/LRUCache";
 import { sanitizeUrl } from "../../utils/urls";
 import { isModKey } from "../../utils/keyboard";
 
@@ -30,73 +30,11 @@ export type MermaidState = {
 
 // The `v3` namespace discards entries cached before the foreignObject fix, so
 // previously mis-sized diagrams are re-rendered instead of served from cache.
-const STORAGE_PREFIX = "mermaid:v3:";
-const MAX_STORAGE_ENTRIES = 20;
-
-class Cache {
-  /** Get a cached SVG by diagram text and theme. */
-  static get(key: string): string | undefined {
-    try {
-      const hash = hashString(key);
-      const value = sessionStorage.getItem(STORAGE_PREFIX + hash);
-      if (value) {
-        this.touchLru(hash);
-        return value;
-      }
-    } catch {
-      // sessionStorage unavailable
-    }
-    return undefined;
-  }
-
-  /** Cache a rendered SVG in sessionStorage. */
-  static set(key: string, value: string) {
-    try {
-      const hash = hashString(key);
-      this.touchLru(hash);
-      this.pruneStorage();
-      sessionStorage.setItem(STORAGE_PREFIX + hash, value);
-    } catch {
-      // sessionStorage full or unavailable
-    }
-  }
-
-  /** Move or append a hash to the end (most recent) of the LRU list. */
-  private static touchLru(hash: string) {
-    const lru = this.getLru();
-    const idx = lru.indexOf(hash);
-    if (idx !== -1) {
-      lru.splice(idx, 1);
-    }
-    lru.push(hash);
-    sessionStorage.setItem(STORAGE_PREFIX + "lru", JSON.stringify(lru));
-  }
-
-  /** Evict least-recently-used entries when over the limit. */
-  private static pruneStorage() {
-    const lru = this.getLru();
-
-    while (lru.length > MAX_STORAGE_ENTRIES) {
-      const evict = lru.shift()!;
-      sessionStorage.removeItem(STORAGE_PREFIX + evict);
-    }
-
-    sessionStorage.setItem(STORAGE_PREFIX + "lru", JSON.stringify(lru));
-  }
-
-  /** Read the LRU order list from sessionStorage. */
-  private static getLru(): string[] {
-    try {
-      const raw = sessionStorage.getItem(STORAGE_PREFIX + "lru");
-      if (raw) {
-        return JSON.parse(raw);
-      }
-    } catch {
-      // corrupted or unavailable
-    }
-    return [];
-  }
-}
+const cache = new LRUCache<string>({
+  max: 20,
+  namespace: "mermaid:v3",
+  persistToSession: true,
+});
 
 let mermaid: typeof MermaidUnsafe;
 
@@ -152,11 +90,11 @@ class MermaidRenderer {
     const element = this.element;
     const text = block.node.textContent;
 
-    const cacheKey = `${isDark ? "dark" : "light"}-${text}`;
-    const cache = Cache.get(cacheKey);
-    if (cache) {
+    const cacheKey = hashString(`${isDark ? "dark" : "light"}-${text}`);
+    const cached = cache.get(cacheKey);
+    if (cached) {
       element.classList.remove("parse-error", "empty");
-      element.innerHTML = cache;
+      element.innerHTML = cached;
       return;
     }
 
@@ -261,7 +199,7 @@ class MermaidRenderer {
 
       // Cache the corrected SVG so we won't need to calculate it again this session
       if (text) {
-        Cache.set(cacheKey, element.innerHTML);
+        cache.set(cacheKey, element.innerHTML);
       }
     } catch (error) {
       const isEmpty = block.node.textContent.trim().length === 0;
@@ -323,6 +261,7 @@ function getNewState({
   autoEditEmpty?: boolean;
 }): MermaidState {
   const decorations: Decoration[] = [];
+  const usedRenderers = new Set<MermaidRenderer>();
   let newEditingId: string | undefined;
 
   // Find all blocks that represent Mermaid diagrams (supports both "mermaid" and "mermaidjs"),
@@ -332,11 +271,25 @@ function getNewState({
   );
 
   blocks.forEach((block) => {
-    const existingDecorations = pluginState.decorationSet.find(
-      block.pos,
-      block.pos + block.node.nodeSize,
-      (spec) => !!spec.diagramId
-    );
+    const existingDecorations = pluginState.decorationSet
+      .find(
+        block.pos,
+        block.pos + block.node.nodeSize,
+        (spec) => !!spec.diagramId
+      )
+      // A widget sitting exactly at the start of this block belongs to the
+      // preceding diagram, whose end position is shared with this one.
+      .filter((decoration) => {
+        if (
+          decoration.from === decoration.to &&
+          decoration.from === block.pos
+        ) {
+          return false;
+        }
+        // Each renderer owns a single DOM element, so it can only back one
+        // diagram — reusing it would place the same node in two places.
+        return !usedRenderers.has(decoration.spec.renderer);
+      });
 
     const bestDecoration = findBestOverlapDecoration(
       existingDecorations,
@@ -346,6 +299,7 @@ function getNewState({
     const isNewBlock = !bestDecoration;
     const renderer: MermaidRenderer =
       bestDecoration?.spec?.renderer ?? new MermaidRenderer(editor);
+    usedRenderers.add(renderer);
 
     // Auto-enter edit mode for newly created empty mermaid diagrams
     if (
@@ -356,16 +310,16 @@ function getNewState({
       newEditingId = renderer.diagramId;
     }
 
+    void renderer.render(block, pluginState.isDark);
+
     const diagramDecoration = Decoration.widget(
       block.pos + block.node.nodeSize,
-      () => {
-        void renderer.render(block, pluginState.isDark);
-        return renderer.element;
-      },
+      () => renderer.element,
       {
         diagramId: renderer.diagramId,
         renderer,
         side: -10,
+        key: `mermaid-${renderer.diagramId}`,
       }
     );
 
@@ -397,7 +351,7 @@ export default function Mermaid({
   isDark: boolean;
   editor: Editor;
 }) {
-  const { onClickLink } = editor.props;
+  const { onClickLink, onNotice } = editor.props;
 
   return new Plugin({
     key: pluginKey,
@@ -430,7 +384,11 @@ export default function Mermaid({
             mermaidMeta && "editingId" in mermaidMeta
               ? mermaidMeta.editingId
               : pluginState.editingId,
-          decorationSet: mapDecorations(pluginState.decorationSet, transaction),
+          decorationSet: mapDecorations(
+            pluginState.decorationSet,
+            transaction,
+            state
+          ),
         };
 
         if (
@@ -473,7 +431,7 @@ export default function Mermaid({
           mermaidMeta ||
           themeToggled ||
           codeBlockChanged ||
-          isRemoteTransaction(transaction)
+          isRemoteTransaction(transaction, state)
         ) {
           return getNewState({
             doc: transaction.doc,
@@ -483,7 +441,7 @@ export default function Mermaid({
               codeBlockChanged &&
               transaction.docChanged &&
               !isPaste &&
-              !isRemoteTransaction(transaction),
+              !isRemoteTransaction(transaction, state),
           });
         }
 
@@ -578,6 +536,12 @@ export default function Mermaid({
             return false;
           }
 
+          // Let clicks on a link within the diagram through, they are handled
+          // on mouseup and should not select the node or open the lightbox.
+          if (target?.closest("a") instanceof SVGAElement) {
+            return false;
+          }
+
           const codeBlock = diagram.previousElementSibling;
           if (!codeBlock) {
             return false;
@@ -633,7 +597,10 @@ export default function Mermaid({
                 onClickLink(sanitizeUrl(href) ?? "");
               }
             } catch (_err) {
-              toast.error(t("Sorry, that type of link is not supported"));
+              onNotice?.(
+                t("Sorry, that type of link is not supported"),
+                "error"
+              );
             }
           }
 

@@ -19,7 +19,6 @@ import env from "@server/env";
 import User from "@server/models/User";
 import ParanoidModel from "@server/models/base/ParanoidModel";
 import { SkipChangeset } from "@server/models/decorators/Changeset";
-import Fix from "@server/models/decorators/Fix";
 import AuthenticationHelper from "@shared/helpers/AuthenticationHelper";
 import { hash } from "@server/utils/crypto";
 import OAuthClient from "./OAuthClient";
@@ -28,7 +27,6 @@ import OAuthClient from "./OAuthClient";
   tableName: "oauth_authentications",
   modelName: "oauth_authentication",
 })
-@Fix
 class OAuthAuthentication extends ParanoidModel<
   InferAttributes<OAuthAuthentication>,
   Partial<InferCreationAttributes<OAuthAuthentication>>
@@ -242,6 +240,24 @@ class OAuthAuthentication extends ParanoidModel<
       ],
       ...options,
     });
+  }
+
+  /**
+   * Revokes the OAuthAuthentication with the given refresh token. The update is
+   * atomic, so concurrent attempts to rotate one refresh token result in a
+   * single successful caller.
+   *
+   * @param input The refresh token to revoke
+   * @returns True if this call revoked the authentication
+   */
+  public static async revokeByRefreshToken(input: string) {
+    const count = await this.destroy({
+      where: {
+        refreshTokenHash: hash(input),
+      },
+    });
+
+    return count > 0;
   }
 }
 

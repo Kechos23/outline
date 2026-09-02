@@ -6,11 +6,12 @@ import { Link } from "react-router-dom";
 import useMeasure from "react-use-measure";
 import styled, { useTheme } from "styled-components";
 import Icon from "@shared/components/Icon";
+import { HEADER_HEIGHT } from "@shared/constants";
 import { s } from "@shared/styles";
 import { altDisplay, metaDisplay } from "@shared/utils/keyboard";
 import { publishDocument } from "~/actions/definitions/documents";
 import { restoreRevision } from "~/actions/definitions/revisions";
-import { Action, Separator } from "~/components/Actions";
+import { Action } from "~/components/Actions";
 import Badge from "~/components/Badge";
 import Button from "~/components/Button";
 import Collaborators from "~/components/Collaborators";
@@ -84,7 +85,7 @@ function DocumentHeader({
   useEffect(() => {
     window.document.documentElement.style.setProperty(
       "--header-offset",
-      isEditingFocus ? "0px" : "64px"
+      isEditingFocus ? "0px" : `${HEADER_HEIGHT}px`
     );
   }, [isEditingFocus]);
 
@@ -286,11 +287,10 @@ function DocumentHeader({
                 hideOnActionDisabled
                 hideIcon
               >
-                {t("Publish")}…
+                {document.collectionId ? t("Publish") : `${t("Publish")}…`}
               </Button>
             </Action>
           )}
-          {!isDeleted && <Separator />}
           <Action>
             <DocumentMenu
               document={document}

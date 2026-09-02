@@ -9,7 +9,11 @@ import { gapCursor } from "prosemirror-gapcursor";
 import type { InputRule } from "prosemirror-inputrules";
 import { keymap } from "prosemirror-keymap";
 import type { NodeSpec, MarkSpec } from "prosemirror-model";
-import { Schema, Node as ProsemirrorNode } from "prosemirror-model";
+import {
+  Schema,
+  Node as ProsemirrorNode,
+  DOMParser as ProsemirrorDOMParser,
+} from "prosemirror-model";
 import type { Plugin, Transaction } from "prosemirror-state";
 import { EditorState, Selection, TextSelection } from "prosemirror-state";
 import type { MarkdownParser } from "prosemirror-markdown";
@@ -24,7 +28,9 @@ import { EditorView } from "prosemirror-view";
 import * as React from "react";
 import type { DefaultTheme, ThemeProps } from "styled-components";
 import styled, { css } from "styled-components";
+import type { CommentAnchor } from "@shared/editor/commands/comment";
 import insertFiles from "@shared/editor/commands/insertFiles";
+import { draftCommentAnchorPluginKey } from "@shared/editor/plugins/DraftCommentAnchorPlugin";
 import Styles from "@shared/editor/components/Styles";
 import type { EmbedDescriptor } from "@shared/editor/embeds";
 import type { CommandFactory, WidgetProps } from "@shared/editor/lib/Extension";
@@ -34,10 +40,12 @@ import { inputRules } from "@shared/editor/lib/inputRules";
 import type { MarkdownSerializer } from "@shared/editor/lib/markdown/serializer";
 import { isRemoteTransaction } from "@shared/editor/lib/multiplayer";
 import textBetween from "@shared/editor/lib/textBetween";
+import { findNearestPos } from "@shared/editor/queries/findNearestPos";
 import { basicExtensions as extensions } from "@shared/editor/nodes";
 import type ReactNode from "@shared/editor/nodes/ReactNode";
 import type {
   ComponentProps,
+  EditorNotice,
   SelectionToolbarMenuDescriptor,
 } from "@shared/editor/types";
 import type {
@@ -45,8 +53,12 @@ import type {
   ProsemirrorMark,
   UserPreferences,
 } from "@shared/types";
+import { HeadingPrefixStyle } from "@shared/types";
+import { headingPrefixPluginKey } from "@shared/editor/extensions/HeadingPrefix";
 import { ProsemirrorHelper } from "@shared/utils/ProsemirrorHelper";
 import EventEmitter from "@shared/utils/events";
+import { getDataTransferFiles } from "@shared/utils/files";
+import { AttachmentValidation } from "@shared/validations";
 import type Document from "~/models/Document";
 import Flex from "~/components/Flex";
 import { PortalContext } from "~/components/Portal";
@@ -63,6 +75,7 @@ import type { LightboxImage } from "@shared/editor/lib/Lightbox";
 import { LightboxImageFactory } from "@shared/editor/lib/Lightbox";
 import Lightbox from "~/components/Lightbox";
 import { anchorPlugin } from "@shared/editor/plugins/AnchorPlugin";
+import { toastNotice } from "./toastNotice";
 
 export type Props = {
   /** An optional identifier for the editor context. It is used to persist local settings */
@@ -132,12 +145,13 @@ export type Props = {
    *
    * @param commentId - the id of the comment mark.
    * @param userId - the id of the user who created the mark.
-   * @param options - options for the comment mark creation.
+   * @param options - options for the comment mark creation, including the
+   * anchor location when the user cannot write the mark into the document.
    */
   onCreateCommentMark?: (
     commentId: string,
     userId: string,
-    options?: { focus: boolean }
+    options?: { focus: boolean; anchor?: CommentAnchor }
   ) => void;
   /** Callback when a comment mark is removed */
   onDeleteCommentMark?: (commentId: string) => void;
@@ -161,10 +175,17 @@ export type Props = {
   ) => void;
   /** Callback when user presses any key with document focused */
   onKeyDown?: (event: React.KeyboardEvent<HTMLDivElement>) => void;
+  /**
+   * Callback used to surface a short notice to the user. Defaults to rendering
+   * a toast so that shared editor code stays agnostic of the toast library.
+   */
+  onNotice?: EditorNotice;
   /** Collection of embed types to render in the document */
   embeds: EmbedDescriptor[];
   /** Display preferences for the logged in user, if any. */
   userPreferences?: UserPreferences | null;
+  /** The style of prefix displayed before headings in the document. */
+  headingPrefix?: HeadingPrefixStyle;
   /** Whether embeds should be rendered without an iframe */
   embedsDisabled?: boolean;
   className?: string;
@@ -206,6 +227,7 @@ export class Editor extends React.PureComponent<
     onFileUploadStop: () => {
       // no default behavior
     },
+    onNotice: toastNotice,
     embeds: [],
     extensions,
   };
@@ -300,6 +322,16 @@ export class Editor extends React.PureComponent<
 
     if (this.props.scrollTo && this.props.scrollTo !== prevProps.scrollTo) {
       void this.scrollToAnchor(this.props.scrollTo);
+    }
+
+    // Recompute heading prefix decorations when the display preference changes
+    if (this.props.headingPrefix !== prevProps.headingPrefix) {
+      this.view.dispatch(
+        this.view.state.tr.setMeta(
+          headingPrefixPluginKey,
+          this.props.headingPrefix ?? HeadingPrefixStyle.None
+        )
+      );
     }
 
     // Focus at the end of the document if switching from readOnly and autoFocus
@@ -549,7 +581,7 @@ export class Editor extends React.PureComponent<
         ) {
           self.handleChange({
             remote: transactions.some(
-              (tr) => tr.docChanged && isRemoteTransaction(tr)
+              (tr) => tr.docChanged && isRemoteTransaction(tr, state)
             ),
           });
         }
@@ -571,6 +603,13 @@ export class Editor extends React.PureComponent<
     return view;
   }
 
+  /**
+   * Scroll the document to the element matching the given selector, waiting for
+   * it to be added to the DOM if it is not rendered yet.
+   *
+   * @param hash the selector to scroll to, typically a heading id prefixed
+   * with #.
+   */
   public async scrollToAnchor(hash: string) {
     if (!hash) {
       return;
@@ -714,6 +753,57 @@ export class Editor extends React.PureComponent<
     );
 
   /**
+   * Insert the content of a drop event at the position nearest to where it
+   * occurred. Intended for drops that land outside of the editor itself.
+   *
+   * @param event The drop event.
+   */
+  public insertDroppedContent = (event: React.DragEvent<HTMLElement>) => {
+    const { view } = this;
+    if (!view.editable) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    const pos = findNearestPos(view, {
+      left: event.clientX,
+      top: event.clientY,
+    });
+    const files = getDataTransferFiles(event);
+
+    // Without files, attempt to parse the payload as an HTML fragment.
+    if (files.length === 0) {
+      const text =
+        event.dataTransfer.getData("text/html") ||
+        event.dataTransfer.getData("text/plain");
+      if (!text) {
+        return;
+      }
+
+      const dom = new DOMParser().parseFromString(text, "text/html");
+      view.dispatch(
+        view.state.tr.insert(
+          pos,
+          ProsemirrorDOMParser.fromSchema(view.state.schema).parse(dom)
+        )
+      );
+      return;
+    }
+
+    // Insert all files as attachments if any of the files are not images.
+    const isAttachment = files.some(
+      (file) => !AttachmentValidation.imageContentTypes.includes(file.type)
+    );
+
+    return insertFiles(view, event, pos, files, {
+      ...this.props,
+      isAttachment,
+    });
+  };
+
+  /**
    * Returns true if the trimmed content of the editor is an empty string.
    *
    * @returns True if the editor is empty
@@ -782,13 +872,18 @@ export class Editor extends React.PureComponent<
         const updatedMarks = existingMarks.filter(
           (mark) => mark.attrs?.id !== commentId
         );
-        const attrs = {
-          ...node.attrs,
-          marks: updatedMarks,
-        };
-        tr.setNodeMarkup(pos, undefined, attrs);
+        if (updatedMarks.length !== existingMarks.length) {
+          const attrs = {
+            ...node.attrs,
+            marks: updatedMarks,
+          };
+          tr.setNodeMarkup(pos, undefined, attrs);
+        }
       }
     });
+
+    // Also remove any local pending anchor decoration for the comment.
+    tr.setMeta(draftCommentAnchorPluginKey, { remove: { id: commentId } });
 
     dispatch(tr);
   };
@@ -824,16 +919,22 @@ export class Editor extends React.PureComponent<
 
       if (isArray(node.attrs?.marks)) {
         const existingMarks = node.attrs.marks as ProsemirrorMark[];
-        const updatedMarks = existingMarks.map((mark) =>
-          mark.type === "comment" && mark.attrs?.id === commentId
-            ? { ...mark, attrs: { ...mark.attrs, ...attrs } }
-            : mark
-        );
-        const newAttrs = {
-          ...node.attrs,
-          marks: updatedMarks,
-        };
-        tr.setNodeMarkup(pos, undefined, newAttrs);
+        if (
+          existingMarks.some(
+            (mark) => mark.type === "comment" && mark.attrs?.id === commentId
+          )
+        ) {
+          const updatedMarks = existingMarks.map((mark) =>
+            mark.type === "comment" && mark.attrs?.id === commentId
+              ? { ...mark, attrs: { ...mark.attrs, ...attrs } }
+              : mark
+          );
+          const newAttrs = {
+            ...node.attrs,
+            marks: updatedMarks,
+          };
+          tr.setNodeMarkup(pos, undefined, newAttrs);
+        }
       }
     });
 
@@ -988,6 +1089,8 @@ export class Editor extends React.PureComponent<
                   rtl={isRTL}
                   readOnly={readOnly}
                   selection={this.view.state.selection}
+                  storedMarks={this.view.state.storedMarks}
+                  isEditorFocused={this.state.isEditorFocused}
                 />
               ))}
             <Observer>

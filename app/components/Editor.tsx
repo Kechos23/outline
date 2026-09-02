@@ -1,18 +1,13 @@
 import { difference } from "es-toolkit/compat";
 import { observer } from "mobx-react";
-import { DOMParser as ProsemirrorDOMParser } from "prosemirror-model";
-import { TextSelection } from "prosemirror-state";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { mergeRefs } from "react-merge-refs";
 import type { Optional } from "utility-types";
-import insertFiles from "@shared/editor/commands/insertFiles";
 import EditorContainer from "@shared/editor/components/Styles";
 import { AttachmentPreset } from "@shared/types";
 import { ProsemirrorHelper } from "@shared/utils/ProsemirrorHelper";
-import { getDataTransferFiles } from "@shared/utils/files";
-import { AttachmentValidation } from "@shared/validations";
 import ClickablePadding from "~/components/ClickablePadding";
 import ErrorBoundary from "~/components/ErrorBoundary";
 import type { Props as EditorProps, Editor as SharedEditor } from "~/editor";
@@ -134,60 +129,9 @@ function Editor(props: Props, ref: React.RefObject<SharedEditor> | null) {
   }, [localRef]);
 
   const handleDrop = React.useCallback(
-    (event: React.DragEvent<HTMLDivElement>) => {
-      event.preventDefault();
-      event.stopPropagation();
-      const files = getDataTransferFiles(event);
-
-      const view = localRef?.current?.view;
-      if (!view) {
-        return;
-      }
-
-      // Find a valid position at the end of the document to insert our content
-      const pos = TextSelection.near(
-        view.state.doc.resolve(view.state.doc.nodeSize - 2)
-      ).from;
-
-      // If there are no files in the drop event attempt to parse the html
-      // as a fragment and insert it at the end of the document
-      if (files.length === 0) {
-        const text =
-          event.dataTransfer.getData("text/html") ||
-          event.dataTransfer.getData("text/plain");
-
-        const dom = new DOMParser().parseFromString(text, "text/html");
-
-        view.dispatch(
-          view.state.tr.insert(
-            pos,
-            ProsemirrorDOMParser.fromSchema(view.state.schema).parse(dom)
-          )
-        );
-
-        return;
-      }
-
-      // Insert all files as attachments if any of the files are not images.
-      const isAttachment = files.some(
-        (file) => !AttachmentValidation.imageContentTypes.includes(file.type)
-      );
-
-      return insertFiles(view, event, pos, files, {
-        uploadFile: handleUploadFile,
-        onFileUploadStart: handleFileUploadStart,
-        onFileUploadStop: handleFileUploadStop,
-        onFileUploadProgress: handleFileUploadProgress,
-        isAttachment,
-      });
-    },
-    [
-      localRef,
-      handleFileUploadStart,
-      handleFileUploadStop,
-      handleFileUploadProgress,
-      handleUploadFile,
-    ]
+    (event: React.DragEvent<HTMLDivElement>) =>
+      localRef.current?.insertDroppedContent(event),
+    []
   );
 
   // see: https://stackoverflow.com/a/50233827/192065
@@ -206,11 +150,12 @@ function Editor(props: Props, ref: React.RefObject<SharedEditor> | null) {
         const commentIds = comments.orderedData.map((c) => c.id);
         const commentMarkIds = commentMarks?.map((c) => c.id);
 
-        // Comment marks that arrive through a remote or sync transaction, such
-        // as the initial load of a collaborative document containing a draft
-        // comment, should not steal focus – only marks created locally should.
+        // Only marks created by a local change should steal focus. Marks that
+        // arrive through a remote or sync transaction, or that are discovered
+        // by a rescan outside of a change event – such as the initial load of
+        // a document containing a draft comment – should not.
         const focus =
-          previousCommentIds.current !== undefined && !event?.remote;
+          previousCommentIds.current !== undefined && !!event && !event.remote;
         const newCommentIds = difference(
           commentMarkIds,
           previousCommentIds.current ?? [],

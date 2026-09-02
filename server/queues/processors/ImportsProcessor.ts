@@ -23,7 +23,7 @@ import {
   ImportTaskState,
   MentionType,
 } from "@shared/types";
-import { colorPalette } from "@shared/utils/collections";
+import { colorPalette } from "@shared/constants";
 import { UrlHelper } from "@shared/utils/UrlHelper";
 import { CollectionValidation } from "@shared/validations";
 import { createContext } from "@server/context";
@@ -252,7 +252,7 @@ export default abstract class ImportsProcessor<
 
     const collections = await Collection.findAll({
       transaction,
-      lock: transaction.LOCK.UPDATE,
+      lock: transaction.LOCK.NO_KEY_UPDATE,
       where: {
         teamId: importModel.teamId,
         apiImportId: importModel.id,

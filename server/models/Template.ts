@@ -32,7 +32,6 @@ import Revision from "./Revision";
 import Team from "./Team";
 import User from "./User";
 import ParanoidModel from "./base/ParanoidModel";
-import Fix from "./decorators/Fix";
 import IsHexColor from "./validators/IsHexColor";
 import Length from "./validators/Length";
 
@@ -87,7 +86,6 @@ type AdditionalFindOptions = {
   },
 }))
 @Table({ tableName: "documents", modelName: "template" })
-@Fix
 class Template extends ParanoidModel<
   InferAttributes<Template>,
   Partial<InferCreationAttributes<Template>>
@@ -206,6 +204,16 @@ class Template extends ParanoidModel<
    */
   get isWorkspaceTemplate() {
     return !this.collectionId;
+  }
+
+  /**
+   * Returns whether this template is an unpublished draft, only visible to the
+   * user that created it.
+   *
+   * @returns boolean
+   */
+  get isDraft() {
+    return !this.publishedAt;
   }
 
   @BeforeValidate

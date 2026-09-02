@@ -12,8 +12,8 @@ import type Document from "~/models/Document";
 import type Revision from "~/models/Revision";
 import { ActionSeparator } from "~/actions";
 import {
-  copyLinkToRevision,
-  downloadRevision,
+  copyLinkToRevisionActionFactory,
+  exportRevisionActionFactory,
   restoreRevision,
 } from "~/actions/definitions/revisions";
 import { Avatar, AvatarSize } from "~/components/Avatar";
@@ -29,7 +29,7 @@ import { documentHistoryPath } from "~/utils/routeHelpers";
 import { EventItem, lineStyle } from "./EventListItem";
 import Facepile from "~/components/Facepile";
 import Text from "~/components/Text";
-import { revisionCollaboratorText } from "./utils";
+import { authTypeSuffix, revisionCollaboratorText } from "./utils";
 
 type Props = {
   document: Document;
@@ -50,8 +50,8 @@ const RevisionListItem = ({ item, document, ...rest }: Props) => {
     () => [
       restoreRevision,
       ActionSeparator,
-      copyLinkToRevision(item.id),
-      downloadRevision(item.id),
+      copyLinkToRevisionActionFactory(item.id),
+      exportRevisionActionFactory(item.id),
     ],
     [item.id]
   );
@@ -76,9 +76,10 @@ const RevisionListItem = ({ item, document, ...rest }: Props) => {
     meta = isLatestRevision ? (
       <>
         {t("Current version")} &middot; {collaboratorText}
+        {authTypeSuffix(item.sourceMetadata?.authType, t)}
       </>
     ) : (
-      t("{{userName}} edited", { userName: collaboratorText })
+      `${t("{{userName}} edited", { userName: collaboratorText })}${authTypeSuffix(item.sourceMetadata?.authType, t)}`
     );
     to = {
       pathname: documentHistoryPath(

@@ -2,6 +2,7 @@
 import { lighten, transparentize } from "polished";
 import type { DefaultTheme } from "styled-components";
 import styled, { css, keyframes } from "styled-components";
+import { HEADER_HEIGHT } from "../../constants";
 import { breakpoints, hover } from "../../styles";
 import { EditorStyleHelper } from "../styles/EditorStyleHelper";
 import { videoStyle } from "./Video";
@@ -435,7 +436,7 @@ const emailStyle = (props: Props) => css`
     border-radius: 8px;
     padding: 6px 8px;
   }
-  .image > img {
+  .image:not(.image-icon) > img {
     width: auto;
     height: auto;
   }
@@ -559,9 +560,40 @@ width: 100%;
   gap: 4px;
   vertical-align: bottom;
 
+  /* Long labels are truncated so a mention never wraps onto a second line. */
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+
+  span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    /* Text sets white-space: normal, so nowrap cannot simply be inherited. */
+    white-space: nowrap;
+  }
+
+  /* Only the label truncates; icons and trailing identifiers stay whole. */
+  &::before,
+  svg,
+  img,
+  span ~ span {
+    flex-shrink: 0;
+  }
+
   &:${hover} {
     cursor: default;
     background: ${props.theme.mentionHoverBackground};
+  }
+
+  /* Date mentions only open the picker when editable, so no hover affordance
+     in read-only mode. */
+  ${
+    props.readOnly
+      ? `&[data-type="date"]:${hover} {
+    background: ${props.theme.mentionBackground};
+  }`
+      : ""
   }
 
   &[data-type="user"],
@@ -582,6 +614,13 @@ width: 100%;
   &.mention-document::before {
     content: "+";
   }
+}
+
+.${EditorStyleHelper.suggestionTrigger} {
+  background: ${props.theme.mentionBackground};
+  border-radius: 4px;
+  box-shadow: 0 0 0 2px ${props.theme.mentionBackground};
+  box-decoration-break: clone;
 }
 
 > div {
@@ -638,7 +677,7 @@ width: 100%;
       margin-top: 0.25em;
     }
 
-    &:not(.placeholder) {
+    &:not(.placeholder):not([data-heading-prefix]) {
       &::before {
         display: none;
         font-family: ${props.theme.fontFamilyMono};
@@ -676,6 +715,13 @@ width: 100%;
   h4 { font-size: var(--font-size-h4); }
   h5 { font-size: var(--font-size-h5); }
   h6 { font-size: var(--font-size-h6); }
+
+  [data-heading-prefix]::before {
+    content: attr(data-heading-prefix);
+    color: ${props.theme.text};
+    opacity: 0.75;
+    margin-inline-end: 0.25em;
+  }
 
   .${EditorStyleHelper.multiplayerSelection} {
     transition: background-color 500ms ease-in-out;
@@ -1057,22 +1103,22 @@ a:first-child {
   }
 }
 
-h1:not(.placeholder)::before {
+h1:not(.placeholder):not([data-heading-prefix])::before {
   content: "H1";
 }
-h2:not(.placeholder)::before {
+h2:not(.placeholder):not([data-heading-prefix])::before {
   content: "H2";
 }
-h3:not(.placeholder)::before {
+h3:not(.placeholder):not([data-heading-prefix])::before {
   content: "H3";
 }
-h4:not(.placeholder)::before {
+h4:not(.placeholder):not([data-heading-prefix])::before {
   content: "H4";
 }
-h5:not(.placeholder)::before {
+h5:not(.placeholder):not([data-heading-prefix])::before {
   content: "H5";
 }
-h6:not(.placeholder)::before {
+h6:not(.placeholder):not([data-heading-prefix])::before {
   content: "H6";
 }
 
@@ -1084,10 +1130,10 @@ h6:not(.placeholder)::before {
   h4,
   h5,
   h6 {
-    &:not(.placeholder)::before {
+    &:not(.placeholder):not([data-heading-prefix])::before {
       opacity: 1;
     }
-    &:hover:not(.placeholder)::before {
+    &:hover:not(.placeholder):not([data-heading-prefix])::before {
       opacity: 0;
     }
   }
@@ -1184,7 +1230,7 @@ h6:not(.placeholder)::before {
     .heading-anchor {
       display: inline-flex;
     }
-    &:not(.placeholder)::before {
+    &:not(.placeholder):not([data-heading-prefix])::before {
       display: ${props.readOnly ? "none" : "inline-block"};
     }
   }
@@ -1236,7 +1282,7 @@ ${
 `
 }
 
-.notice-block {
+.${EditorStyleHelper.notice} {
   display: flex;
   align-items: center;
   position: relative;
@@ -1261,13 +1307,13 @@ ${
   }
 }
 
-.notice-block .content {
+.${EditorStyleHelper.notice} .${EditorStyleHelper.noticeContent} {
   flex-grow: 1;
   min-width: 0;
 }
 
-.notice-block {
-  .icon {
+.${EditorStyleHelper.notice} {
+  .${EditorStyleHelper.noticeIcon} {
     width: 24px;
     height: 24px;
     align-self: flex-start;
@@ -1275,18 +1321,18 @@ ${
     color: ${props.theme.noticeInfoBackground};
   }
 
-  &:dir(rtl) .icon {
+  &:dir(rtl) .${EditorStyleHelper.noticeIcon} {
     margin-right: 0;
     margin-left: 4px;
   }
 }
 
-.notice-block.tip {
+.${EditorStyleHelper.notice}.tip {
   background: ${transparentize(0.9, props.theme.noticeTipBackground)};
   border-left: 4px solid ${props.theme.noticeTipBackground};
   color: ${props.theme.noticeTipText};
 
-  .icon {
+  .${EditorStyleHelper.noticeIcon} {
     color: ${props.theme.noticeTipBackground};
   }
 
@@ -1295,12 +1341,12 @@ ${
   }
 }
 
-.notice-block.warning {
+.${EditorStyleHelper.notice}.warning {
   background: ${transparentize(0.9, props.theme.noticeWarningBackground)};
   border-left: 4px solid ${props.theme.noticeWarningBackground};
   color: ${props.theme.noticeWarningText};
 
-  .icon {
+  .${EditorStyleHelper.noticeIcon} {
     color: ${props.theme.noticeWarningBackground};
   }
 
@@ -1309,12 +1355,12 @@ ${
   }
 }
 
-.notice-block.success {
+.${EditorStyleHelper.notice}.success {
   background: ${transparentize(0.9, props.theme.noticeSuccessBackground)};
   border-left: 4px solid ${props.theme.noticeSuccessBackground};
   color: ${props.theme.noticeSuccessText};
 
-  .icon {
+  .${EditorStyleHelper.noticeIcon} {
     color: ${props.theme.noticeSuccessBackground};
   }
 
@@ -2439,7 +2485,7 @@ table {
   }
 
   > .${EditorStyleHelper.tableScrollable} > table > tbody > tr:first-child > th {
-    transform: translateY(calc(var(--header-offset, 64px) + var(--sticky-scroll-offset, 0px)));
+    transform: translateY(calc(var(--header-offset, ${HEADER_HEIGHT}px) + var(--sticky-scroll-offset, 0px)));
 
     // Mask content scrolling past the top of the header (first shadow) and draw
     // the divider below it (second shadow). Using box-shadow rather than a real
@@ -2458,6 +2504,41 @@ table {
 
   > .${EditorStyleHelper.tableGrip} {
     display: none;
+  }
+}
+
+.${EditorStyleHelper.tableStickyColumn} {
+  // The padding of the scroll container also holds the column back, so the
+  // column stops at the same place it sits when the table is not scrolled.
+  > .${EditorStyleHelper.tableScrollable} > table > tbody > tr > th[data-first-column] {
+    position: sticky;
+    left: 0;
+    z-index: 1;
+  }
+
+  // The first cell is part of both the sticky row and column, so it goes above both.
+  &.${EditorStyleHelper.tableStickyHeader} > .${EditorStyleHelper.tableScrollable} > table > tbody > tr:first-child > th[data-first-column] {
+    z-index: 3;
+  }
+
+  // Move the scroll shadow from the edge of the table to the edge of the column.
+  &.${EditorStyleHelper.tableShadowLeft} {
+    &::before {
+      box-shadow: none;
+    }
+
+    > .${EditorStyleHelper.tableScrollable} > table > tbody > tr > th[data-first-column]::after {
+      content: "";
+      position: absolute;
+      top: -1px;
+      bottom: -1px;
+      right: -${EditorStyleHelper.padding}px;
+      width: ${EditorStyleHelper.padding}px;
+      pointer-events: none;
+      box-shadow: 16px 0 16px -16px inset rgba(0, 0, 0, ${
+        props.theme.isDark ? 1 : 0.25
+      });
+    }
   }
 }
 
@@ -2600,16 +2681,18 @@ del {
 }
 
 @media print {
+  // The heading level labels are an editing affordance, but the same pseudo
+  // element carries the heading prefix, which is content and must be printed.
   .placeholder::before,
   .block-menu-trigger,
   .heading-anchor,
   button.show-source-button,
-  h1:not(.placeholder)::before,
-  h2:not(.placeholder)::before,
-  h3:not(.placeholder)::before,
-  h4:not(.placeholder)::before,
-  h5:not(.placeholder)::before,
-  h6:not(.placeholder)::before {
+  h1:not(.placeholder):not([data-heading-prefix])::before,
+  h2:not(.placeholder):not([data-heading-prefix])::before,
+  h3:not(.placeholder):not([data-heading-prefix])::before,
+  h4:not(.placeholder):not([data-heading-prefix])::before,
+  h5:not(.placeholder):not([data-heading-prefix])::before,
+  h6:not(.placeholder):not([data-heading-prefix])::before {
     display: none;
   }
 
@@ -2737,6 +2820,9 @@ li > .${EditorStyleHelper.toggleBlock} {
       margin-top: 0;
     }
     > .${EditorStyleHelper.toggleBlockHead} {
+      /* The title acts as a fold/unfold control when the document is read-only */
+      ${props.readOnly ? "cursor: var(--pointer);" : ""}
+
       > * {
         margin-top: 0;
       }

@@ -6,10 +6,11 @@ import { IconType, NotificationEventType } from "@shared/types";
 import { determineIconType } from "@shared/utils/icon";
 import type GroupMembership from "~/models/GroupMembership";
 import UserMembership from "~/models/UserMembership";
+import { useActiveSidebarContext } from "~/hooks/useActiveSidebarContext";
 import useBoolean from "~/hooks/useBoolean";
-import { useLocationSidebarContext } from "~/hooks/useLocationSidebarContext";
 import useStores from "~/hooks/useStores";
 import DocumentMenu from "~/menus/DocumentMenu";
+import * as Scenes from "~/routes/scenes";
 import {
   useDragMembership,
   useDropToReorderUserMembership,
@@ -40,7 +41,7 @@ function SharedWithMeLink({ membership, depth = 0 }: Props) {
   const [menuOpen, handleMenuOpen, handleMenuClose] = useBoolean();
   const { documentId } = membership;
   const isActiveDocument = documentId === ui.activeDocumentId;
-  const locationSidebarContext = useLocationSidebarContext();
+  const activeSidebarContext = useActiveSidebarContext();
   const sidebarContext = useSidebarContext();
   const document = documentId ? documents.get(documentId) : undefined;
 
@@ -54,7 +55,7 @@ function SharedWithMeLink({ membership, depth = 0 }: Props) {
     : false;
 
   const [expanded, setExpanded, setCollapsed] = useBoolean(
-    isActiveDocumentInPath && locationSidebarContext === sidebarContext
+    isActiveDocumentInPath && activeSidebarContext === sidebarContext
   );
 
   const { event: disclosureEvent, onDisclosureClick } =
@@ -63,13 +64,13 @@ function SharedWithMeLink({ membership, depth = 0 }: Props) {
   useSidebarDisclosure(setExpanded, setCollapsed);
 
   React.useEffect(() => {
-    if (isActiveDocumentInPath && locationSidebarContext === sidebarContext) {
+    if (isActiveDocumentInPath && activeSidebarContext === sidebarContext) {
       setExpanded();
     }
   }, [
     isActiveDocumentInPath,
     sidebarContext,
-    locationSidebarContext,
+    activeSidebarContext,
     setExpanded,
   ]);
 
@@ -119,8 +120,11 @@ function SharedWithMeLink({ membership, depth = 0 }: Props) {
     () => document?.asNavigationNode,
     [document]
   );
-  const [{ isOverReparent, canDropToReparent }, dropToReparent] =
-    useDropToReparentDocument(reparentableNode, setExpanded, parentRef);
+  const [{ isOverReparent }, dropToReparent] = useDropToReparentDocument(
+    reparentableNode,
+    setExpanded,
+    parentRef
+  );
 
   const { icon } = useSidebarLabelAndIcon(membership);
   const [{ isDragging }, draggableRef] = useDragMembership(membership);
@@ -178,6 +182,7 @@ function SharedWithMeLink({ membership, depth = 0 }: Props) {
       documentId={documentId ?? ""}
       document={document}
       to={{ pathname: document.path, state: { sidebarContext } }}
+      onClickIntent={Scenes.Document.preload}
       depth={depth}
       icon={icon}
       canEdit={false}
@@ -192,7 +197,7 @@ function SharedWithMeLink({ membership, depth = 0 }: Props) {
       isDragging={isDragging}
       parentRef={parentRef}
       dropToReparentRef={dropToReparent}
-      isActiveDropTarget={isOverReparent && canDropToReparent}
+      isActiveDropTarget={isOverReparent}
       menu={menu}
       menuOpen={menuOpen}
       isActiveOverride={isActive}
